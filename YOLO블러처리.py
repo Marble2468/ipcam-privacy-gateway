@@ -1,3 +1,4 @@
+# 터미널에 pip install ultralytics 설치 필요
 import cv2
 import numpy as np
 from ultralytics import YOLO
