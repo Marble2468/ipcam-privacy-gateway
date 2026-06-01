@@ -40,15 +40,15 @@
 
 ```mermaid
 flowchart LR
-    A[IP Camera] -->|Local Video Stream| B[Raspberry Pi Security Gateway]
+    A[IP 카메라] -->|로컬 영상 스트림| B[Raspberry Pi 보안 게이트웨이]
 
-    B --> C{Access Type}
+    B --> C{접속 유형 판별}
 
-    C -->|Authorized Device| D[Original Video Stream]
-    C -->|Unauthorized Device| E[Masked Video Stream]
+    C -->|인가 기기| D[원본 영상 스트림]
+    C -->|비인가 기기| E[마스킹 영상 스트림]
 
-    D --> F[Owner Device]
-    E --> G[Guest or External Device]
+    D --> F[사용자 기기]
+    E --> G[외부 또는 게스트 기기]
 ```
 
 ---
@@ -57,32 +57,32 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Camera_Network[Isolated Camera Network]
-        A[IP Camera<br/>TP-Link Tapo C100]
+    subgraph Camera_Network[격리된 카메라 네트워크]
+        A[IP 카메라<br/>TP-Link Tapo C100]
     end
 
-    subgraph Gateway[Raspberry Pi Security Gateway]
-        B[Network Isolation]
-        C[Local Stream Receiver]
-        D[Access Classification]
-        E[Video Masking Module]
-        F[Web Dashboard]
+    subgraph Gateway[라즈베리파이 보안 게이트웨이]
+        B[망 격리]
+        C[로컬 영상 스트림 수신]
+        D[접속 기기 판별]
+        E[영상 마스킹 모듈]
+        F[웹 대시보드]
     end
 
-    subgraph User_Access[User Access Layer]
-        G[Authorized Device]
-        H[Unauthorized Device]
+    subgraph User_Access[사용자 접속 영역]
+        G[인가 기기]
+        H[비인가 기기]
     end
 
     A --> C
     C --> D
-    D -->|Authorized| F
-    D -->|Unauthorized| E
+    D -->|인가 접속| F
+    D -->|비인가 접속| E
     E --> F
     F --> G
     F --> H
 
-    B -.blocks external cloud connection.-> A
+    B -.외부 클라우드 직접 연결 차단.-> A
 ```
 
 ---
@@ -109,12 +109,12 @@ IP 카메라가 외부 인터넷 또는 제조사 클라우드 서버와 직접 
 
 ```mermaid
 flowchart TD
-    A[Original Video Input] --> B[Frame Extraction]
-    B --> C[Object Detection]
-    C --> D[Bounding Box or Segmentation Mask]
-    D --> E[Mask Expansion]
-    E --> F[Blur or Mosaic Processing]
-    F --> G[Masked Video Output]
+    A[원본 영상 입력] --> B[프레임 단위 분리]
+    B --> C[객체 탐지]
+    C --> D[바운딩 박스 또는 세그멘테이션 마스크 생성]
+    D --> E[마스킹 영역 확장]
+    E --> F[블러 또는 모자이크 처리]
+    F --> G[마스킹 영상 출력]
 ```
 
 ### 4. 마스킹 성능 평가
@@ -123,14 +123,14 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[Original Video] --> D[Evaluation Module]
-    B[Masked Video] --> D
-    C[Annotation CSV<br/>Ground Truth Bounding Box] --> D
+    A[원본 영상] --> D[성능 평가 모듈]
+    B[마스킹 영상] --> D
+    C[정답 CSV<br/>Ground Truth 바운딩 박스] --> D
 
-    D --> E[Masking Rate]
-    D --> F[Leakage Rate]
-    D --> G[Frame Success Rate]
-    D --> H[Over-masking Rate]
+    D --> E[마스킹 처리율]
+    D --> F[누출률]
+    D --> G[프레임 기준 성공률]
+    D --> H[과잉 마스킹률]
 ```
 
 ---
@@ -262,13 +262,13 @@ python src/main.py
 
 ```mermaid
 flowchart TD
-    A[Prepare CCTV-like Video or IP Camera Video] --> B[Create Ground Truth Bounding Boxes]
-    B --> C[Run Object Detection-based Masking]
-    C --> D[Generate Masked Video]
-    D --> E[Compare Original and Masked Video]
-    E --> F[Calculate Masked Pixels in Target Area]
-    F --> G[Compute Evaluation Metrics]
-    G --> H[Save CSV and JSON Results]
+    A[CCTV 유사 영상 또는 IP 카메라 영상 준비] --> B[보호 대상 영역 정답 바운딩 박스 생성]
+    B --> C[객체 탐지 기반 마스킹 코드 실행]
+    C --> D[마스킹 영상 생성]
+    D --> E[원본 영상과 마스킹 영상 비교]
+    E --> F[보호 대상 영역 내 마스킹 픽셀 계산]
+    F --> G[성능 평가 지표 산출]
+    G --> H[CSV 및 JSON 결과 저장]
 ```
 
 ---
