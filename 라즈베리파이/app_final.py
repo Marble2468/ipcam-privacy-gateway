@@ -33,6 +33,8 @@ CONFIG_FILE = "gateway_config.json"
 REGISTRATION_CODE = "".join(random.choices(string.digits, k=6))
 BYPASS_PIN = "".join(random.choices(string.digits, k=4))
 
+current_expected_challenge = None
+
 class SystemSecurityStateMachine:
     def __init__(self):
         self.mode = "NORMAL"  # NORMAL, LOCKDOWN
@@ -252,8 +254,11 @@ def api_login_idpw():
 
 @app.route('/api/verify_signature', methods=['POST'])
 def api_verify_signature():
+    global current_expected_challenge # 방금 보낸 난수 변수 가져오기
+
     data = request.json or {}
     is_recovery = data.get("recovery", False)
+    
     if state.mode == "LOCKDOWN" and not is_recovery: 
         return jsonify({"status": "error", "msg": "락다운 상태입니다."}), 403
         
@@ -261,6 +266,12 @@ def api_verify_signature():
     signature_hex = data.get("signature", "")
     
     try:
+        if current_expected_challenge is None or challenge != current_expected_challenge:
+            logger.warning("🚨 [Replay Attack] 난수값이 다름")
+            raise InvalidSignature
+
+        current_expected_challenge = None
+        
         with open(PUBLIC_KEY_FILE, "rb") as f: 
             pub_key = serialization.load_pem_public_key(f.read())
         pub_key.verify(bytes.fromhex(signature_hex), challenge.encode('utf-8'), ec.ECDSA(hashes.SHA256()))
