@@ -22,7 +22,9 @@ if [ -z "$AIHUB_APIKEY" ]; then
     export AIHUB_APIKEY
 fi
 
-for n in $(seq 1 20); do
+# Largest zip first: aihubshell holds the tar, its parts and the merged zip at once
+# (about 3x the zip), so the 11 GB ones must run before clips/ fills up.
+for n in 18 17 19 3 16 20 1 4 5 7 8 2 12 6 11 10 13 15 9 14; do
     [ -f "clips/.VS$n.done" ] && continue
     bash aihubshell -mode d -datasetkey 515 -filekey "${KEYS[$n]}"
     zip=$(find . -name "VS$n.zip" | head -1)
