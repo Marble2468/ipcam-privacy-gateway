@@ -1,0 +1,17 @@
+# secrets
+.env
+gateway_config.json
+*.pem
+
+# datasets (AI Hub data must not be redistributed)
+*.mp4
+*.zip
+*.tar
+/list_*.txt
+
+# model files (generated, see evaluation/)
+*.pt
+*.onnx
+*_ncnn_model/
+
+__pycache__/
