@@ -10,7 +10,6 @@ import threading
 import requests
 import json
 import logging
-import torch
 from flask import Flask, Response, jsonify, request, make_response, render_template_string
 from ultralytics import YOLO
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -39,7 +38,6 @@ current_expected_challenge = None
 # 마스킹 모델: Table 4에서 가장 빠른 구성 (evaluation/export_models.sh로 생성)
 MASK_MODEL = "yolov8n_192x320_ncnn_model"
 MASK_IMGSZ = (192, 320)  # 640x360 프레임을 최소 여백으로 넣는 입력 크기
-TORCH_THREADS = 4        # Table 4와 같은 조건 (ultralytics 기본값은 코어 수 - 1)
 
 class SystemSecurityStateMachine:
     def __init__(self):
@@ -108,9 +106,8 @@ class StreamInferencePipeline:
         # 대체 모델로 넘어가지 않는다. 못 불러오면 model은 None이고 게스트 화면은 검게 나간다.
         try:
             model = YOLO(MASK_MODEL, task='detect')
-            # 첫 추론에서 예측기가 만들어지며 torch 스레드를 되돌리므로, 한 번 돌린 뒤에 맞춘다
+            # 빈 프레임으로 한 번 돌려 둔다: 추론이 안 되면 여기서 실패하고, 첫 프레임 지연도 없어진다
             model(np.zeros((360, 640, 3), dtype=np.uint8), imgsz=MASK_IMGSZ, verbose=False)
-            torch.set_num_threads(TORCH_THREADS)
             self.model = model
             logger.info(f"[AI Core] 마스킹 모델 로드 완료: {MASK_MODEL}")
         except Exception:

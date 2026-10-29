@@ -13,8 +13,9 @@ Every engine gets the same input shape (192x320 for 360p, 640x1088 for 1080p).
   cpu     = system-wide CPU use (all 4 cores = 100%) averaged over the measured frames
   ram     = peak resident memory of the process
 
-Threads: torch runs with 4 threads for every engine (it also does NMS and mask
-post-processing for ONNX and NCNN). OpenCV runs single-threaded in every combination,
+Threads: every engine keeps its default settings. ultralytics sets torch to
+cpu_count - 1 (3 on the Pi); torch runs the PyTorch model, and for ONNX and NCNN only
+NMS and mask post-processing. OpenCV runs single-threaded in every combination,
 as it does in the gateway once ultralytics is imported.
 
 usage: python benchmark_engines.py --res 360 --model bbox --engine ncnn --run 1 --out results.csv
@@ -38,7 +39,6 @@ import psutil
 CLIP = "AIHUB_CLIP.mp4"  # AI Hub 515 training clip, not in the Table 5 sample
 WARMUP, MAX_FRAMES, MAX_SECONDS = 30, 900, 60
 CONF, BLUR = 0.3, (19, 19)
-TORCH_THREADS = 4  # all 4 cores; ultralytics would set 3 (cpu_count - 1)
 RES = {360: {"size": (640, 360), "imgsz": (192, 320), "dilate": 11},
        1080: {"size": (1920, 1080), "imgsz": (640, 1088), "dilate": 31}}
 BACKEND_FORMAT = {"pytorch": "pt", "onnx": "onnx", "ncnn": "ncnn"}  # AutoBackend.format
@@ -156,9 +156,6 @@ def measure(args):
         latency = time.perf_counter() - t
         if i == 0 and yolo is not None:
             check_backend(yolo, args.engine, res["imgsz"])
-            # only now: the predictor resets torch threads when it starts on the first frame
-            import torch
-            torch.set_num_threads(TORCH_THREADS)
         i += 1
         if i <= WARMUP:
             continue
