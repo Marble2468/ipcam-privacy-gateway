@@ -28,6 +28,8 @@ def summarise(path):
         "frames": len(rows),
         "frames_with_person": sum(r["persons"] > 0 for r in rows),
         # against AI Hub keypoints (independent of both models)
+        "persons_fully_covered_light": ratio(total["persons_full_light"], total["persons_kp"]),
+        "persons_fully_covered_seg": ratio(total["persons_full_seg"], total["persons_kp"]),
         "face_exposed_light": 1 - ratio(total["nose_light"], total["nose_n"]),
         "face_exposed_seg": 1 - ratio(total["nose_seg"], total["nose_n"]),
         "frames_face_exposed_light": ratio(sum(r["nose_light"] < r["nose_n"] for r in face_frames), len(face_frames)),

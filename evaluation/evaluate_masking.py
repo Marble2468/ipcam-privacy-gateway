@@ -36,7 +36,9 @@ SEG_DILATE = 11  # baseline dilates 31x31 at 1920x1080, i.e. about 11x11 at 640x
 NOSE = 0  # K0 in the AI Hub keypoint list
 
 COLUMNS = ["frame", "persons", "nose_n", "nose_light", "nose_seg",
-           "kp_n", "kp_light", "kp_seg", "ref_px", "ref_covered_px", "boxes"]
+           "kp_n", "kp_light", "kp_seg",
+           "persons_kp", "persons_full_light", "persons_full_seg",  # persons with >=1 labeled joint / all inside
+           "ref_px", "ref_covered_px", "boxes"]
 
 
 def keypoints_by_frame(label_path):
@@ -101,9 +103,14 @@ def evaluate_clip(video, label, light, seg):
         persons = kps.get(idx, [])
         noses = [p[NOSE] for p in persons if p[NOSE] is not None]
         pts = [pt for p in persons for pt in p if pt is not None]
+        labeled = [[pt for pt in p if pt is not None] for p in persons]
+        labeled = [p for p in labeled if p]
         rows.append([idx, len(persons), len(noses),
                      sum(inside(boxes, pt) for pt in noses), sum(inside(seg_area, pt) for pt in noses),
                      len(pts), sum(inside(boxes, pt) for pt in pts), sum(inside(seg_area, pt) for pt in pts),
+                     len(labeled),
+                     sum(all(inside(boxes, pt) for pt in p) for p in labeled),
+                     sum(all(inside(seg_area, pt) for pt in p) for p in labeled),
                      int(ref.sum()), int((ref & boxes).sum()), n_boxes])
     cap.release()
     assert rows, f"{video.name}: no frames read"
