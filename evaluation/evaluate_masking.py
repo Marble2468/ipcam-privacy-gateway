@@ -40,7 +40,10 @@ COLUMNS = ["frame", "persons", "nose_n", "nose_light", "nose_seg",
 
 
 def keypoints_by_frame(label_path):
-    """frame index -> persons, each a list of 15 (x, y) points in 640x360, None where not labeled."""
+    """frame index -> persons, each a list of 15 (x, y) points in 640x360.
+
+    None where the point is not labeled (0,0) or falls outside the frame.
+    """
     data = json.loads(Path(label_path).read_bytes())
     sx = FRAME_W / int(data["metadata"]["width"])
     sy = FRAME_H / int(data["metadata"]["height"])
@@ -51,16 +54,16 @@ def keypoints_by_frame(label_path):
             pts = []
             for kp in person["keypoints"]:
                 x, y = map(float, kp.split(","))
-                pts.append(None if x == 0 and y == 0 else (x * sx, y * sy))
+                x, y = x * sx, y * sy
+                labeled = (x, y) != (0, 0) and 0 <= x < FRAME_W and 0 <= y < FRAME_H
+                pts.append((x, y) if labeled else None)
             persons.append(pts)
         frames[int(fr["frame_index"])] = persons
     return frames
 
 
 def inside(mask, pt):
-    x = min(max(int(pt[0]), 0), FRAME_W - 1)
-    y = min(max(int(pt[1]), 0), FRAME_H - 1)
-    return bool(mask[y, x])
+    return bool(mask[int(pt[1]), int(pt[0])])
 
 
 def run_models(frame, light, seg):
@@ -71,13 +74,13 @@ def run_models(frame, light, seg):
         # same truncation and clipping as the gateway
         boxes[max(0, y1):min(FRAME_H, y2), max(0, x1):min(FRAME_W, x2)] = 1
 
-    ref = np.zeros((FRAME_H, FRAME_W), np.uint8)
-    r = seg(frame, imgsz=SEG_IMGSZ, conf=SEG_CONF, classes=[0], verbose=False)[0]
-    if r.masks is not None:
-        # masks.xy is in frame coordinates; masks.data is letterboxed and must not be resized directly
-        for poly in r.masks.xy:
-            if len(poly):
-                cv2.fillPoly(ref, [poly.astype(np.int32)], 1)
+    # retina_masks returns masks at frame size. Without it masks.data is letterboxed
+    # (384x640 here) and resizing it straight to the frame shifts the silhouette.
+    r = seg(frame, imgsz=SEG_IMGSZ, conf=SEG_CONF, classes=[0], retina_masks=True, verbose=False)[0]
+    if r.masks is None:
+        ref = np.zeros((FRAME_H, FRAME_W), np.uint8)
+    else:
+        ref = (r.masks.data.cpu().numpy().max(0) > 0.5).astype(np.uint8)
     seg_area = cv2.dilate(ref, np.ones((SEG_DILATE, SEG_DILATE), np.uint8))
     return boxes, len(xyxy), ref, seg_area
 
@@ -122,7 +125,8 @@ clips_dir, out_dir = Path(sys.argv[1]), Path(sys.argv[2])
 config = {
     "stride": STRIDE, "frame_size": [FRAME_W, FRAME_H], "classes": [0],
     "light": {"model": LIGHT_MODEL, "imgsz": LIGHT_IMGSZ, "conf": LIGHT_CONF},
-    "seg": {"model": SEG_MODEL, "imgsz": SEG_IMGSZ, "conf": SEG_CONF, "dilate": SEG_DILATE},
+    "seg": {"model": SEG_MODEL, "imgsz": SEG_IMGSZ, "conf": SEG_CONF, "retina_masks": True,
+            "dilate": SEG_DILATE},
     "python": platform.python_version(), "platform": platform.platform(),
     "packages": {p: version(p) for p in
                  ["ultralytics", "torch", "onnxruntime", "ncnn", "opencv-python", "numpy"]},
