@@ -26,6 +26,8 @@ fi
 # (about 3x the zip), so the 11 GB ones must run before clips/ fills up.
 for n in 18 17 19 3 16 20 1 4 5 7 8 2 12 6 11 10 13 15 9 14; do
     [ -f "clips/.VS$n.done" ] && continue
+    # aihubshell does not resume: a tar left by a closed window would only take up space
+    rm -f download*.tar
     bash aihubshell -mode d -datasetkey 515 -filekey "${KEYS[$n]}"
     zip=$(find . -name "VS$n.zip" | head -1)
     [ -n "$zip" ] || { echo "VS$n.zip was not downloaded"; exit 1; }
