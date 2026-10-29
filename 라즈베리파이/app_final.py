@@ -10,6 +10,7 @@ import threading
 import requests
 import json
 import logging
+import torch
 from flask import Flask, Response, jsonify, request, make_response, render_template_string
 from ultralytics import YOLO
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -34,6 +35,11 @@ REGISTRATION_CODE = "".join(random.choices(string.digits, k=6))
 BYPASS_PIN = "".join(random.choices(string.digits, k=4))
 
 current_expected_challenge = None
+
+# 마스킹 모델: Table 4에서 가장 빠른 구성 (evaluation/export_models.sh로 생성)
+MASK_MODEL = "yolov8n_192x320_ncnn_model"
+MASK_IMGSZ = (192, 320)  # 640x360 프레임을 최소 여백으로 넣는 입력 크기
+TORCH_THREADS = 4        # Table 4와 같은 조건 (ultralytics 기본값은 코어 수 - 1)
 
 class SystemSecurityStateMachine:
     def __init__(self):
@@ -96,14 +102,20 @@ class StreamInferencePipeline:
         self.frame = None
         self.running = False
         self.lock = threading.Lock()
+        self.infer_lock = threading.Lock()  # ultralytics 예측기는 스레드 안전하지 않음
 
     def init_yolo_engine(self):
+        # 대체 모델로 넘어가지 않는다. 못 불러오면 model은 None이고 게스트 화면은 검게 나간다.
         try:
-            self.model = YOLO("yolov8n_320.onnx", task='detect')
-            logger.info("⚙️ [AI Core] YOLO v8 ONNX 경량 가속 엔진 세팅 완료.")
-        except Exception as e:
-            logger.error(f"ONNX 로드 가동 실패, 오리지널 PT 대체 폴백: {e}")
-            self.model = YOLO("yolov8n.pt", task='detect')
+            model = YOLO(MASK_MODEL, task='detect')
+            # 첫 추론에서 예측기가 만들어지며 torch 스레드를 되돌리므로, 한 번 돌린 뒤에 맞춘다
+            model(np.zeros((360, 640, 3), dtype=np.uint8), imgsz=MASK_IMGSZ, verbose=False)
+            torch.set_num_threads(TORCH_THREADS)
+            self.model = model
+            logger.info(f"[AI Core] 마스킹 모델 로드 완료: {MASK_MODEL}")
+        except Exception:
+            self.model = None
+            logger.exception(f"마스킹 모델 로드 실패: {MASK_MODEL}")
 
     def start_pipeline(self, rtsp_url):
         if not rtsp_url: return
@@ -350,9 +362,12 @@ def generate_secure_stream(level):
                 processed_frame = np.zeros((h, w, 3), dtype=np.uint8)
                 cv2.putText(processed_frame, "🔒 LOGIN REQUIRED", (40, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             elif level == "guest":
+                masked = False
                 if pipeline.model is not None:
                     try:
-                        results = pipeline.model(processed_frame, classes=[0], conf=0.3, verbose=False)
+                        # 뷰어마다 따로 추론하고 차례로 처리한다. 뷰어가 늘면 프레임당 한 번 추론해 공유하는 구조로 바꿀 것
+                        with pipeline.infer_lock:
+                            results = pipeline.model(processed_frame, imgsz=MASK_IMGSZ, classes=[0], conf=0.3, verbose=False)
                         for r in results:
                             if r.boxes is not None:
                                 for box in r.boxes:
@@ -361,8 +376,15 @@ def generate_secure_stream(level):
                                     if (x2 > x1) and (y2 > y1):
                                         roi = processed_frame[y1:y2, x1:x2]
                                         processed_frame[y1:y2, x1:x2] = cv2.GaussianBlur(roi, (19, 19), 0)
-                    except: pass
-                cv2.putText(processed_frame, "SECURE FEED: GUEST (MASKED)", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                        masked = True
+                    except Exception:
+                        logger.exception("마스킹 추론 실패")
+                if masked:
+                    cv2.putText(processed_frame, "SECURE FEED: GUEST (MASKED)", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                else:
+                    # fail-closed: 마스킹을 못 했으면 원본 대신 검은 화면
+                    processed_frame = np.zeros((h, w, 3), dtype=np.uint8)
+                    cv2.putText(processed_frame, "MASKING UNAVAILABLE", (40, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             elif level == "master":
                 cv2.putText(processed_frame, "SECURE FEED: MASTER (RAW)", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 

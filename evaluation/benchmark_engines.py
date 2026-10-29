@@ -10,8 +10,12 @@ Every engine gets the same input shape (192x320 for 360p, 640x1088 for 1080p).
 
   latency = resize + inference + blur per frame (decoding excluded: the gateway
             reads the camera in a separate thread). FPS = 1000 / mean latency.
-  cpu     = system-wide CPU use (all 4 cores = 100%), sampled every second
+  cpu     = system-wide CPU use (all 4 cores = 100%) averaged over the measured frames
   ram     = peak resident memory of the process
+
+Threads: torch runs with 4 threads for every engine (it also does NMS and mask
+post-processing for ONNX and NCNN). OpenCV runs single-threaded in every combination,
+as it does in the gateway once ultralytics is imported.
 
 usage: python benchmark_engines.py --res 360 --model bbox --engine ncnn --run 1 --out results.csv
        python benchmark_engines.py --summary results.csv
@@ -22,7 +26,6 @@ import csv
 import resource
 import statistics
 import subprocess
-import threading
 import time
 from datetime import datetime
 from importlib import metadata
@@ -35,9 +38,10 @@ import psutil
 CLIP = "AIHUB_CLIP.mp4"  # AI Hub 515 training clip, not in the Table 5 sample
 WARMUP, MAX_FRAMES, MAX_SECONDS = 30, 900, 60
 CONF, BLUR = 0.3, (19, 19)
+TORCH_THREADS = 4  # all 4 cores; ultralytics would set 3 (cpu_count - 1)
 RES = {360: {"size": (640, 360), "imgsz": (192, 320), "dilate": 11},
        1080: {"size": (1920, 1080), "imgsz": (640, 1088), "dilate": 31}}
-BACKEND_FLAG = {"pytorch": "pt", "onnx": "onnx", "ncnn": "ncnn"}  # AutoBackend attribute
+BACKEND_FORMAT = {"pytorch": "pt", "onnx": "onnx", "ncnn": "ncnn"}  # AutoBackend.format
 BUSY = ("evaluate_masking", "app_final", "benchmark_engines")
 
 
@@ -82,6 +86,7 @@ def make_step(args, res):
     """Return a function that masks one frame in place."""
     w, h = res["size"]
     if args.model == "none":
+        cv2.setNumThreads(0)  # importing ultralytics does this in the other combinations
         return (lambda frame: cv2.resize(frame, (w, h))), None
 
     from ultralytics import YOLO
@@ -110,7 +115,7 @@ def make_step(args, res):
 def check_backend(yolo, engine, imgsz):
     """Stop if ultralytics ran a different engine or input shape than asked for."""
     backend = yolo.predictor.model
-    assert getattr(backend, BACKEND_FLAG[engine]), f"expected {engine}, ultralytics loaded something else"
+    assert backend.format == BACKEND_FORMAT[engine], f"expected {engine}, ultralytics loaded {backend.format}"
     if engine != "pytorch":
         assert list(backend.metadata["imgsz"]) == list(imgsz), f"model input {backend.metadata['imgsz']} != {imgsz}"
 
@@ -139,15 +144,7 @@ def measure(args):
 
     cap = cv2.VideoCapture(CLIP)
     assert cap.isOpened(), f"cannot open {CLIP}"
-    latencies, decodes, cpu = [], [], []
-    stop = threading.Event()
-
-    def sample_cpu():
-        psutil.cpu_percent(None)
-        while not stop.wait(1.0):
-            cpu.append(psutil.cpu_percent(None))
-
-    sampler = threading.Thread(target=sample_cpu, daemon=True)
+    latencies, decodes = [], []
     i, started = 0, None
     while True:
         t = time.perf_counter()
@@ -159,18 +156,20 @@ def measure(args):
         latency = time.perf_counter() - t
         if i == 0 and yolo is not None:
             check_backend(yolo, args.engine, res["imgsz"])
+            # only now: the predictor resets torch threads when it starts on the first frame
+            import torch
+            torch.set_num_threads(TORCH_THREADS)
         i += 1
         if i <= WARMUP:
             continue
         if started is None:
             started = time.monotonic()
-            sampler.start()
+            psutil.cpu_percent(None)  # start of the CPU window
         latencies.append(latency * 1000)
         decodes.append(decode * 1000)
         if len(latencies) >= MAX_FRAMES or time.monotonic() - started >= MAX_SECONDS:
             break
-    stop.set()
-    sampler.join()
+    cpu = psutil.cpu_percent(None)  # average since the start of the window
     cap.release()
 
     row = {
@@ -183,7 +182,7 @@ def measure(args):
         "latency_ms": round(statistics.mean(latencies), 2),
         "latency_p95_ms": round(float(np.percentile(latencies, 95)), 2),
         "decode_ms": round(statistics.mean(decodes), 2),
-        "cpu_pct": round(statistics.mean(cpu), 1) if cpu else "",
+        "cpu_pct": round(cpu, 1),
         "ram_peak_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),  # KiB on Linux
         "temp_start": temp_start, "temp_end": temperature(),
         "throttled": throttle_start | throttled_now(),
