@@ -1,7 +1,7 @@
 """Table 5: how well the gateway's box blur hides people in the sampled AI Hub clips.
 
 Every STRIDE-th frame of each clip is resized to 640x360 as the gateway does, then:
-  light  - the gateway detector (YOLOv8n ONNX 320, conf 0.3, person only); its boxes are
+  light  - the gateway detector (YOLOv8n NCNN 192x320, conf 0.3, person only); its boxes are
            exactly the area the gateway blurs
   seg    - YOLOv8n-seg (NCNN 384x640, conf 0.25, person only); its raw mask is the reference
            silhouette, and the same mask dilated like the segmentation baseline is the
@@ -30,7 +30,7 @@ from ultralytics import YOLO
 
 STRIDE = 3
 FRAME_W, FRAME_H = 640, 360  # gateway resizes every frame to this (app_final.py)
-LIGHT_MODEL, LIGHT_IMGSZ, LIGHT_CONF = "yolov8n_320.onnx", 320, 0.3
+LIGHT_MODEL, LIGHT_IMGSZ, LIGHT_CONF = "yolov8n_192x320_ncnn_model", (192, 320), 0.3  # as in app_final.py
 SEG_MODEL, SEG_IMGSZ, SEG_CONF = "yolov8n-seg_384x640_ncnn_model", (384, 640), 0.25
 SEG_DILATE = 11  # baseline dilates 31x31 at 1920x1080, i.e. about 11x11 at 640x360
 NOSE = 0  # K0 in the AI Hub keypoint list
