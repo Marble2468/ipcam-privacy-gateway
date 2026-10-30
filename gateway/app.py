@@ -687,27 +687,27 @@ def render_main_dashboard(level):
         .btn-red{{background:#ef4444;}} .btn-blue{{background:#3b82f6;}} .btn-orange{{background:#f97316;}}
     </style></head>
     <body onload="triggerDashboardAuthChain({level_status})">
-    <h1>🛡️ 스마트 홈케어 실시간 보안 관제</h1>
+    <h1>🛡️ Smart Home Care - Real-Time Security Monitoring</h1>
     
     <div style="display:flex;gap:30px; margin-top:20px;"><img src="/video_feed" style="width:720px;border-radius:12px;border:3px solid #334155;">
     <div style="background:#1e293b;padding:25px;border-radius:12px;width:300px;display:flex;flex-direction:column;gap:15px;">
-    <h3>제어 센터</h3>
+    <h3>Control Center</h3>
     
     <div id="pin_gate_panel" style="display:none; flex-direction:column; gap:10px; background:#2d3748; padding:15px; border-radius:8px; border:2px dashed #f87171;">
-        <p style="color:#f87171; margin:0; font-size:0.85rem; font-weight:bold;">⚠️ 비인가 장치 차단 모드 작동 중</p>
-        <p style="color:#94a3b8; margin:0; font-size:0.8rem;">텔레그램으로 발송된 일회성 PIN(5분 유효)을 입력하면 30분 동안 원본 영상 권한이 허용됩니다.</p>
-        <div style="display:flex; gap:5px;"><input type="text" id="l_pin" style="flex:1;padding:8px; background:#0f172a; border:1px solid #475569; color:white; border-radius:4px;" placeholder="PIN 6자리"><button style="padding:8px;background:#ef4444;color:white;border:none;border-radius:6px;font-weight:bold;" onclick="submitBypassPin()">확인</button></div>
+        <p style="color:#f87171; margin:0; font-size:0.85rem; font-weight:bold;">⚠️ Unauthorized Device - Fail-Safe Mode Active</p>
+        <p style="color:#94a3b8; margin:0; font-size:0.8rem;">Enter the one-time PIN sent via Telegram (valid for 5 minutes) to unlock the raw video stream for 30 minutes.</p>
+        <div style="display:flex; gap:5px;"><input type="text" id="l_pin" style="flex:1;padding:8px; background:#0f172a; border:1px solid #475569; color:white; border-radius:4px;" placeholder="6-digit PIN"><button style="padding:8px;background:#ef4444;color:white;border:none;border-radius:6px;font-weight:bold;" onclick="submitBypassPin()">Submit</button></div>
     </div>
     
-    <button class="btn btn-orange" onclick="tryAccessSettings()">⚙️ 인프라 환경설정 변경</button>
-    <button class="btn btn-red" onclick="logout()">🔴 대시보드 로그아웃</button>
+    <button class="btn btn-orange" onclick="tryAccessSettings()">⚙️ Infrastructure Settings</button>
+    <button class="btn btn-red" onclick="logout()">🔴 Log Out</button>
     </div></div>
 
     <script>
     // 서버가 발급한 챌린지에 서명한다. 서명은 WebCrypto가 주는 r||s 64바이트를 hex로 그대로 보낸다(DER 변환은 서버).
     async function signChallenge(pk) {{
         const c = await (await fetch('/api/get_challenge')).json();
-        if(c.status !== "success") {{ alert("❌ 챌린지 발급 실패: " + c.msg); return null; }}
+        if(c.status !== "success") {{ alert("❌ Could not get a challenge: " + c.msg); return null; }}
         const sig = await window.crypto.subtle.sign({{name: "ECDSA", hash: {{name: "SHA-256"}}}}, pk, new TextEncoder().encode(c.challenge));
         const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
         return {{challenge: c.challenge, signature: sigHex}};
@@ -732,7 +732,7 @@ def render_main_dashboard(level):
 
         const pk = await loadMasterKey();
         if(!pk) {{
-            alert("⚠️ 2차 비대칭키 소유권 인증 실패: 이 브라우저에는 마스터 키가 존재하지 않습니다. 비식별 마스킹을 강제 적용하며, 관리자 텔레그램으로 우회코드를 발송합니다.");
+            alert("⚠️ Signature check failed: this browser has no master key. The video stays masked and a one-time PIN is sent to the administrator via Telegram.");
             document.getElementById("pin_gate_panel").style.display = "flex";
             fetch('/api/verify_signature', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{challenge:'', signature:''}})}});
             return;
@@ -748,10 +748,10 @@ def render_main_dashboard(level):
         
         const sigData = await sigRes.json();
         if(sigData.status === "success") {{
-            alert("✅ [암호학적 인증 완료] 마스터 기기 전자서명 검증에 성공했습니다. 1080p 원본 스트리밍을 개방합니다.");
+            alert("✅ Master device signature verified. Opening the raw video stream.");
             location.reload();
         }} else {{
-            alert("🚨 [보안 위협 경고] 기기 도난 및 위조 서명이 감지되었습니다! 마스킹 관제 모드로 차단 격리하며 텔레그램 킬스위치를 전송합니다.");
+            alert("🚨 Invalid signature. The video stays masked and a Telegram alert has been sent.");
             document.getElementById("pin_gate_panel").style.display = "flex";
         }}
     }}
@@ -759,7 +759,7 @@ def render_main_dashboard(level):
     async function tryAccessSettings() {{
         const pk = await loadMasterKey();
         if(!pk) {{
-            alert("🚫 진입 거부: 이 브라우저에는 권한 자산(마스터 암호키)이 없어 환경설정을 수정할 수 없습니다.");
+            alert("🚫 Access denied: this browser has no master key, so the settings cannot be changed.");
             return;
         }}
 
@@ -773,10 +773,10 @@ def render_main_dashboard(level):
         
         const data = await res.json();
         if(data.status === "success") {{
-            alert("🔓 [서명 소유권 입증 완료] 설정 동적 제어 콘솔로 이동합니다.");
+            alert("🔓 Signature verified. Opening the settings page.");
             location.href = "/settings";
         }} else {{
-            alert("❌ 서명 검증 실패: 설정 수정을 불허합니다.");
+            alert("❌ Signature verification failed: settings access denied.");
         }}
     }}
 
@@ -784,9 +784,9 @@ def render_main_dashboard(level):
         fetch('/api/verify_pin',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{pin:document.getElementById('l_pin').value}})}})
         .then(r=>r.json()).then(d=>{{
             if(d.status==='success') {{
-                alert("🔓 신뢰 권한 위임: PIN 번호가 확인되었습니다. 원본 영상 관제로 즉시 전환합니다.");
+                alert("🔓 PIN accepted. Switching to the raw video stream for 30 minutes.");
                 location.reload();
-            }} else {{ alert("❌ 인증 실패: " + d.msg); }}
+            }} else {{ alert("❌ Authentication failed: " + d.msg); }}
         }});
     }}
 
@@ -809,7 +809,7 @@ def render_lockdown_gate():
     // 대시보드의 signChallenge와 같다(이 페이지는 f-string이 아니라 중괄호가 하나)
     async function signChallenge(pk) {
         const c = await (await fetch('/api/get_challenge')).json();
-        if(c.status !== "success") { alert("❌ 챌린지 발급 실패: " + c.msg); return null; }
+        if(c.status !== "success") { alert("❌ Could not get a challenge: " + c.msg); return null; }
         const sig = await window.crypto.subtle.sign({name: "ECDSA", hash: {name: "SHA-256"}}, pk, new TextEncoder().encode(c.challenge));
         const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
         return {challenge: c.challenge, signature: sigHex};
