@@ -9,7 +9,9 @@ import threading
 import requests
 import json
 import logging
-from flask import Flask, Response, jsonify, request, make_response, render_template_string
+from flask import Flask, Response, jsonify, request, make_response
+from markupsafe import escape
+from werkzeug.security import generate_password_hash, check_password_hash
 from ultralytics import YOLO
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
@@ -311,7 +313,7 @@ def api_setup_gateway():
         with open(PUBLIC_KEY_FILE, "w") as f: f.write(data.get("public_key", ""))
         config_data = {
             "bot_token": data.get("bot_token", ""), "chat_id": data.get("chat_id", ""),
-            "rtsp_url": data.get("rtsp_url", ""), "admin_id": data.get("admin_id", ""), "admin_pw": data.get("admin_pw", "")
+            "rtsp_url": data.get("rtsp_url", ""), "admin_id": data["admin_id"], "admin_pw": generate_password_hash(data["admin_pw"])
         }
         with open(CONFIG_FILE, "w") as f: json.dump(config_data, f)
         state._load_config()
@@ -324,7 +326,8 @@ def api_setup_gateway():
 def api_login_idpw():
     if state.mode == "LOCKDOWN": return jsonify({"status": "error", "msg": "시스템이 현재 락다운 상태입니다."}), 403
     data = request.json or {}
-    if data.get("id") == state.admin_id and data.get("pw") == state.admin_pw:
+    pw = data.get("pw")
+    if data.get("id") == state.admin_id and isinstance(pw, str) and check_password_hash(state.admin_pw, pw):
         resp = make_response(jsonify({"status": "success"}))
         resp.set_cookie("auth_token", generate_jwt_claims("guest"), httponly=True)
         return resp
@@ -435,7 +438,11 @@ def api_update_setting():
     valid_keys = ["rtsp_url", "bot_token", "chat_id", "admin_pw"]
     if target_key not in valid_keys:
         return jsonify({"status": "error", "msg": "허용되지 않은 설정 키 자산입니다."}), 400
-        
+    if target_key == "admin_pw":
+        if not isinstance(target_val, str) or not target_val:
+            return jsonify({"status": "error", "msg": "새 비밀번호가 비어 있습니다."}), 400
+        target_val = generate_password_hash(target_val)
+
     success = state.update_config_item(target_key, target_val)
     if success:
         if target_key == "rtsp_url":
@@ -527,7 +534,8 @@ def settings_page():
     if level != "master":
         return "<h1>🔒 접근 거부: 마스터 단말 전자서명 소유자만 진입할 수 있습니다.</h1>", 403
         
-    return render_template_string(f"""
+    # 템플릿 엔진을 거치지 않는다: 설정값에 든 Jinja 문법이 실행되지 않게 하고, 값은 HTML 이스케이프만 한다
+    return f"""
     <!DOCTYPE html>
     <html><head><meta charset="UTF-8"><title>System Config Center</title>
     <style>
@@ -547,7 +555,7 @@ def settings_page():
         <div class="row">
             <label style="font-weight:bold; color:#94a3b8;">1. 비디오 스트림 RTSP 주소</label>
             <div class="input-group">
-                <input type="text" id="cfg_rtsp" value="{state.rtsp_url}" placeholder="RTSP 스트림 타겟 엔드포인트">
+                <input type="text" id="cfg_rtsp" value="{escape(state.rtsp_url)}" placeholder="RTSP 스트림 타겟 엔드포인트">
                 <button onclick="commitModify('rtsp_url', 'cfg_rtsp')">변경</button>
             </div>
         </div>
@@ -555,7 +563,7 @@ def settings_page():
         <div class="row">
             <label style="font-weight:bold; color:#94a3b8;">2. 텔레그램 API 봇 토큰 (Bot Token)</label>
             <div class="input-group">
-                <input type="text" id="cfg_token" value="{state.bot_token}" placeholder="Telegram Bot HTTP API Token">
+                <input type="text" id="cfg_token" value="{escape(state.bot_token)}" placeholder="Telegram Bot HTTP API Token">
                 <button onclick="commitModify('bot_token', 'cfg_token')">변경</button>
             </div>
         </div>
@@ -563,7 +571,7 @@ def settings_page():
         <div class="row">
             <label style="font-weight:bold; color:#94a3b8;">3. 침입 탐지 경보 수신용 Chat ID</label>
             <div class="input-group">
-                <input type="text" id="cfg_chat" value="{state.chat_id}" placeholder="Telegram Target Chat/Group ID">
+                <input type="text" id="cfg_chat" value="{escape(state.chat_id)}" placeholder="Telegram Target Chat/Group ID">
                 <button onclick="commitModify('chat_id', 'cfg_chat')">변경</button>
             </div>
         </div>
@@ -599,7 +607,7 @@ def settings_page():
     }}
     </script>
     </body></html>
-    """)
+    """
 
 def render_setup_wizard():
     return """
