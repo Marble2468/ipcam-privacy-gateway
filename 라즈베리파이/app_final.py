@@ -616,14 +616,31 @@ def render_setup_wizard():
     <button style="width:100%;padding:12px;background:#3b82f6;color:white;font-weight:bold;border:none;border-radius:6px;cursor:pointer;" onclick="setup()">📦 인프라 구축</button></div>
     <script>
     function ab2pem(obj,label){var str=btoa(String.fromCharCode.apply(null,new Uint8Array(obj)));var res="-----BEGIN "+label+"-----\\n";while(str.length>0){res+=str.substring(0,64)+"\\n";str=str.substring(64);}res+="-----END "+label+"-----";return res;}
+    // 개인키는 추출 불가 CryptoKey 객체째로 IndexedDB에 둔다(localStorage는 문자열만 담을 수 있다)
+    function keyStore(mode, fn) {
+        return new Promise((resolve, reject) => {
+            const open = indexedDB.open("edge_gateway", 1);
+            open.onupgradeneeded = () => open.result.createObjectStore("keys");
+            open.onerror = () => reject(open.error);
+            open.onsuccess = () => {
+                const req = fn(open.result.transaction("keys", mode).objectStore("keys"));
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            };
+        });
+    }
     async function setup(){
-        const kp=await window.crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},true,["sign","verify"]);
-        localStorage.setItem("master_private_key",JSON.stringify(Array.from(new Uint8Array(await window.crypto.subtle.exportKey("pkcs8",kp.privateKey)))));
+        // extractable=false: 스크립트가 개인키를 꺼낼 수 없다. 공개키는 이 상태에서도 내보낼 수 있다
+        const kp=await window.crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},false,["sign","verify"]);
         const pubPem=ab2pem(await window.crypto.subtle.exportKey("spki",kp.publicKey),"PUBLIC KEY");
-        fetch('/api/setup_gateway',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        const d=await (await fetch('/api/setup_gateway',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
             code:document.getElementById('s_code').value,rtsp_url:document.getElementById('s_rtsp').value,bot_token:document.getElementById('s_tok').value,
             chat_id:document.getElementById('s_chat').value,admin_id:document.getElementById('s_uid').value,admin_pw:document.getElementById('s_pw').value,public_key:pubPem
-        })}).then(r=>r.json()).then(d=>{if(d.status==='success')location.reload();else alert("설정 실패: "+d.msg);});
+        })})).json();
+        if(d.status!=='success'){alert("설정 실패: "+d.msg);return;}
+        await keyStore("readwrite", s => s.put(kp.privateKey, "master_private_key"));  // 서버가 공개키를 받은 뒤에만 저장
+        localStorage.removeItem("master_private_key");  // 옛 버전이 평문으로 남긴 키
+        location.reload();
     }
     </script></body></html>
     """
@@ -688,18 +705,31 @@ def render_main_dashboard(level):
         return {{challenge: c.challenge, signature: sigHex}};
     }}
 
+    // 설정 마법사가 IndexedDB에 넣어 둔 추출 불가 개인키. 없거나 IndexedDB를 못 쓰면 undefined
+    function loadMasterKey() {{
+        return new Promise(resolve => {{
+            const open = indexedDB.open("edge_gateway", 1);
+            open.onupgradeneeded = () => open.result.createObjectStore("keys");
+            open.onerror = () => resolve(undefined);
+            open.onsuccess = () => {{
+                const req = open.result.transaction("keys", "readonly").objectStore("keys").get("master_private_key");
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(undefined);
+            }};
+        }});
+    }}
+
     async function triggerDashboardAuthChain(alreadyMaster){{
         if(alreadyMaster) return;
-        
-        const pkData = localStorage.getItem("master_private_key");
-        if(!pkData) {{
+
+        const pk = await loadMasterKey();
+        if(!pk) {{
             alert("⚠️ 2차 비대칭키 소유권 인증 실패: 이 브라우저에는 마스터 키가 존재하지 않습니다. 비식별 마스킹을 강제 적용하며, 관리자 텔레그램으로 우회코드를 발송합니다.");
             document.getElementById("pin_gate_panel").style.display = "flex";
             fetch('/api/verify_signature', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{challenge:'', signature:''}})}});
             return;
         }}
-        
-        const pk = await window.crypto.subtle.importKey("pkcs8", new Uint8Array(JSON.parse(pkData)), {{name: "ECDSA", namedCurve: "P-256"}}, true, ["sign"]);
+
         const signed = await signChallenge(pk);
         if(!signed) return;
 
@@ -719,13 +749,12 @@ def render_main_dashboard(level):
     }}
 
     async function tryAccessSettings() {{
-        const pkData = localStorage.getItem("master_private_key");
-        if(!pkData) {{
+        const pk = await loadMasterKey();
+        if(!pk) {{
             alert("🚫 진입 거부: 이 브라우저에는 권한 자산(마스터 암호키)이 없어 환경설정을 수정할 수 없습니다.");
             return;
         }}
-        
-        const pk = await window.crypto.subtle.importKey("pkcs8", new Uint8Array(JSON.parse(pkData)), {{name: "ECDSA", namedCurve: "P-256"}}, true, ["sign"]);
+
         const signed = await signChallenge(pk);
         if(!signed) return;
 
@@ -777,9 +806,21 @@ def render_lockdown_gate():
         const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
         return {challenge: c.challenge, signature: sigHex};
     }
+    // 대시보드의 loadMasterKey와 같다
+    function loadMasterKey() {
+        return new Promise(resolve => {
+            const open = indexedDB.open("edge_gateway", 1);
+            open.onupgradeneeded = () => open.result.createObjectStore("keys");
+            open.onerror = () => resolve(undefined);
+            open.onsuccess = () => {
+                const req = open.result.transaction("keys", "readonly").objectStore("keys").get("master_private_key");
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(undefined);
+            };
+        });
+    }
     async function releaseLockdown(){
-        const pkData = localStorage.getItem("master_private_key"); if(!pkData){alert("❌ 해제 거부: 이 단말은 락다운을 해제할 권한이 없습니다.");return;}
-        const pk = await window.crypto.subtle.importKey("pkcs8", new Uint8Array(JSON.parse(pkData)), {name: "ECDSA", namedCurve: "P-256"}, true, ["sign"]);
+        const pk = await loadMasterKey(); if(!pk){alert("❌ 해제 거부: 이 단말은 락다운을 해제할 권한이 없습니다.");return;}
         const signed = await signChallenge(pk);
         if(!signed) return;
 
