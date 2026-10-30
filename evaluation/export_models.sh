@@ -5,8 +5,8 @@
 # by ultralytics if they are not already there.
 set -e
 
-# Gateway detector (gateway/app.py) and the light model in evaluate_masking.py.
-# Square 320x320 input: the gateway's 640x360 frame is letterboxed into it.
+# Square 320x320 ONNX detector: the gateway's model before 2026-10-29, kept to
+# repeat the reference Table 5 run. The gateway now uses yolov8n_192x320_ncnn_model (below).
 yolo export model=yolov8n.pt format=onnx imgsz=320
 mv yolov8n.onnx yolov8n_320.onnx
 
