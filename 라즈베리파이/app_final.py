@@ -13,6 +13,7 @@ import logging
 from flask import Flask, Response, jsonify, request, make_response, render_template_string
 from ultralytics import YOLO
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.exceptions import InvalidSignature
 import numpy as np
@@ -33,7 +34,11 @@ CONFIG_FILE = "gateway_config.json"
 REGISTRATION_CODE = "".join(random.choices(string.digits, k=6))
 BYPASS_PIN = "".join(random.choices(string.digits, k=4))
 
-current_expected_challenge = None
+# 서버가 발급한 서명용 챌린지: nonce -> 만료 시각. 한 번 검증에 쓰면(성공이든 실패든) 지운다.
+CHALLENGE_TTL = 60   # 초
+MAX_PENDING = 100    # 락다운 중에는 로그인 없이 발급하므로 개수 상한을 둔다
+pending_challenges = {}
+challenge_lock = threading.Lock()
 
 # 마스킹 모델: Table 4에서 가장 빠른 구성 (evaluation/export_models.sh로 생성)
 MASK_MODEL = "yolov8n_192x320_ncnn_model"
@@ -261,30 +266,53 @@ def api_login_idpw():
         return resp
     return jsonify({"status": "error", "msg": "로그인 자격 증명 실패"}), 401
 
+@app.route('/api/get_challenge')
+def api_get_challenge():
+    # 평소에는 1단계(ID/PW)를 통과한 세션에만 발급. 락다운 중에는 로그인이 막혀 있으므로 해제용으로 누구에게나 발급
+    if state.mode != "LOCKDOWN" and extract_jwt_level(request.cookies.get("auth_token")) == "none":
+        return jsonify({"status": "error", "msg": "먼저 로그인하십시오."}), 401
+    now = time.time()
+    with challenge_lock:
+        for nonce, expires in list(pending_challenges.items()):
+            if expires < now:
+                del pending_challenges[nonce]
+        if len(pending_challenges) >= MAX_PENDING:
+            return jsonify({"status": "error", "msg": "잠시 후 다시 시도하십시오."}), 429
+        nonce = secrets.token_hex(16)
+        pending_challenges[nonce] = now + CHALLENGE_TTL
+    return jsonify({"status": "success", "challenge": nonce})
+
 @app.route('/api/verify_signature', methods=['POST'])
 def api_verify_signature():
-    global current_expected_challenge # 방금 보낸 난수 변수 가져오기
-
     data = request.json or {}
     is_recovery = data.get("recovery", False)
-    
-    if state.mode == "LOCKDOWN" and not is_recovery: 
+
+    if state.mode == "LOCKDOWN" and not is_recovery:
         return jsonify({"status": "error", "msg": "락다운 상태입니다."}), 403
-        
+    if state.mode != "LOCKDOWN" and is_recovery:
+        return jsonify({"status": "error", "msg": "락다운 상태가 아닙니다."}), 400
+    if not is_recovery and extract_jwt_level(request.cookies.get("auth_token")) == "none":
+        return jsonify({"status": "error", "msg": "먼저 로그인하십시오."}), 401
+
     challenge = data.get("challenge", "")
-    signature_hex = data.get("signature", "")
-    
+    with challenge_lock:
+        expires = pending_challenges.pop(challenge, None)  # 일회성: 검증 결과와 관계없이 소비
+
     try:
-        if current_expected_challenge is None or challenge != current_expected_challenge:
-            logger.warning("🚨 [Replay Attack] 난수값이 다름")
+        if expires is None or expires < time.time():
+            logger.warning("🚨 [Replay Attack] 발급하지 않았거나 이미 쓴(또는 만료된) 챌린지")
             raise InvalidSignature
 
-        current_expected_challenge = None
-        
-        with open(PUBLIC_KEY_FILE, "rb") as f: 
+        # 브라우저(WebCrypto)는 서명을 r||s 64바이트로 준다 -> 여기서 DER로 바꾼다
+        raw = bytes.fromhex(data.get("signature", ""))
+        if len(raw) != 64:
+            raise InvalidSignature
+        der = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
+
+        with open(PUBLIC_KEY_FILE, "rb") as f:
             pub_key = serialization.load_pem_public_key(f.read())
-        pub_key.verify(bytes.fromhex(signature_hex), challenge.encode('utf-8'), ec.ECDSA(hashes.SHA256()))
-        
+        pub_key.verify(der, challenge.encode('utf-8'), ec.ECDSA(hashes.SHA256()))
+
         if is_recovery:
             state.trigger_lockdown(False)
             logger.info("🔓 [Crypto] 마스터 암호키 검증 무결성 입증 완료: 락다운 잠금을 정식 해제합니다.")
@@ -292,7 +320,7 @@ def api_verify_signature():
         resp = make_response(jsonify({"status": "success"}))
         resp.set_cookie("auth_token", generate_jwt_claims("master"), httponly=True)
         return resp
-    except InvalidSignature:
+    except (InvalidSignature, ValueError):  # ValueError: 서명이 hex가 아닌 경우
         if not is_recovery:
             dispatch_telegram_intrusion_msg("2차 비대칭키 서명 검증 불일치 원천 차단")
         return jsonify({"status": "signature_failed", "msg": "서명 불일치"}), 401
@@ -564,12 +592,13 @@ def render_main_dashboard(level):
     </div></div>
 
     <script>
-    function rawSignToDer(rawSign) {{
-        const r = rawSign.slice(0, 32); const s = rawSign.slice(32);
-        let rArr = Array.from(r); let sArr = Array.from(s);
-        if (rArr[0] > 0x7f) rArr.unshift(0); if (sArr[0] > 0x7f) sArr.unshift(0);
-        const der = [0x30, 4 + rArr.length + sArr.length, 0x02, rArr.length, ...rArr, 0x02, sArr.length, ...sArr];
-        return btoa(String.fromCharCode.apply(null, der));
+    // 서버가 발급한 챌린지에 서명한다. 서명은 WebCrypto가 주는 r||s 64바이트를 hex로 그대로 보낸다(DER 변환은 서버).
+    async function signChallenge(pk) {{
+        const c = await (await fetch('/api/get_challenge')).json();
+        if(c.status !== "success") {{ alert("❌ 챌린지 발급 실패: " + c.msg); return null; }}
+        const sig = await window.crypto.subtle.sign({{name: "ECDSA", hash: {{name: "SHA-256"}}}}, pk, new TextEncoder().encode(c.challenge));
+        const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+        return {{challenge: c.challenge, signature: sigHex}};
     }}
 
     async function triggerDashboardAuthChain(alreadyMaster){{
@@ -583,17 +612,13 @@ def render_main_dashboard(level):
             return;
         }}
         
-        const challenge = "Edge_Gate_Auth_" + Date.now();
         const pk = await window.crypto.subtle.importKey("pkcs8", new Uint8Array(JSON.parse(pkData)), {{name: "ECDSA", namedCurve: "P-256"}}, true, ["sign"]);
-        const sigBuf = await window.crypto.subtle.sign({{name: "ECDSA", hash: {{name: "SHA-256"}}}}, pk, new TextEncoder().encode(challenge));
-        
-        const derBase64 = rawSignToDer(new Uint8Array(sigBuf));
-        const derBytes = Uint8Array.from(atob(derBase64), c => c.charCodeAt(0));
-        const sigHex = Array.from(derBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-        
+        const signed = await signChallenge(pk);
+        if(!signed) return;
+
         const sigRes = await fetch('/api/verify_signature', {{
             method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{challenge: challenge, signature: sigHex}})
+            body: JSON.stringify(signed)
         }});
         
         const sigData = await sigRes.json();
@@ -613,17 +638,13 @@ def render_main_dashboard(level):
             return;
         }}
         
-        const challenge = "Access_Settings_" + Date.now();
         const pk = await window.crypto.subtle.importKey("pkcs8", new Uint8Array(JSON.parse(pkData)), {{name: "ECDSA", namedCurve: "P-256"}}, true, ["sign"]);
-        const sigBuf = await window.crypto.subtle.sign({{name: "ECDSA", hash: {{name: "SHA-256"}}}}, pk, new TextEncoder().encode(challenge));
-        
-        const derBase64 = rawSignToDer(new Uint8Array(sigBuf));
-        const derBytes = Uint8Array.from(atob(derBase64), c => c.charCodeAt(0));
-        const sigHex = Array.from(derBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-        
+        const signed = await signChallenge(pk);
+        if(!signed) return;
+
         const res = await fetch('/api/verify_signature', {{
             method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{challenge: challenge, signature: sigHex}})
+            body: JSON.stringify(signed)
         }});
         
         const data = await res.json();
@@ -661,26 +682,23 @@ def render_lockdown_gate():
     <button style="width:100%; padding:15px; background:#f87171; color:#450a0a; font-weight:bold; font-size:1rem; border:none; border-radius:6px; cursor:pointer;" onclick="releaseLockdown()">🔓 마스터 비대칭키 서명 제출 및 락다운 해제</button>
     </div>
     <script>
-    function rawSignToDer(rawSign) {
-        const r = rawSign.slice(0, 32); const s = rawSign.slice(32);
-        let rArr = Array.from(r); let sArr = Array.from(s);
-        if (rArr[0] > 0x7f) rArr.unshift(0); if (sArr[0] > 0x7f) sArr.unshift(0);
-        const der = [0x30, 4 + rArr.length + sArr.length, 0x02, rArr.length, ...rArr, 0x02, sArr.length, ...sArr];
-        return btoa(String.fromCharCode.apply(null, der));
+    // 대시보드의 signChallenge와 같다(이 페이지는 f-string이 아니라 중괄호가 하나)
+    async function signChallenge(pk) {
+        const c = await (await fetch('/api/get_challenge')).json();
+        if(c.status !== "success") { alert("❌ 챌린지 발급 실패: " + c.msg); return null; }
+        const sig = await window.crypto.subtle.sign({name: "ECDSA", hash: {name: "SHA-256"}}, pk, new TextEncoder().encode(c.challenge));
+        const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+        return {challenge: c.challenge, signature: sigHex};
     }
     async function releaseLockdown(){
         const pkData = localStorage.getItem("master_private_key"); if(!pkData){alert("❌ 해제 거부: 이 단말은 락다운을 해제할 권한이 없습니다.");return;}
-        const challenge = "Recover_Lockdown_" + Date.now();
         const pk = await window.crypto.subtle.importKey("pkcs8", new Uint8Array(JSON.parse(pkData)), {name: "ECDSA", namedCurve: "P-256"}, true, ["sign"]);
-        const sigBuf = await window.crypto.subtle.sign({name: "ECDSA", hash: {name: "SHA-256"}}, pk, new TextEncoder().encode(challenge));
-        
-        const derBase64 = rawSignToDer(new Uint8Array(sigBuf));
-        const derBytes = Uint8Array.from(atob(derBase64), c => c.charCodeAt(0));
-        const sigHex = Array.from(derBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-        
+        const signed = await signChallenge(pk);
+        if(!signed) return;
+
         const res = await fetch('/api/verify_signature', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({challenge: challenge, signature: sigHex, recovery: true})
+            body: JSON.stringify({...signed, recovery: true})
         });
         const d = await res.json();
         if(d.status === "success") { alert("🔓 시스템 복구 완료: 락다운을 해제합니다."); location.reload(); } 
