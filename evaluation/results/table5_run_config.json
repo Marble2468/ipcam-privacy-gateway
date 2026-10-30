@@ -1,0 +1,38 @@
+{
+  "stride": 3,
+  "frame_size": [
+    640,
+    360
+  ],
+  "classes": [
+    0
+  ],
+  "light": {
+    "model": "yolov8n_192x320_ncnn_model",
+    "imgsz": [
+      192,
+      320
+    ],
+    "conf": 0.3
+  },
+  "seg": {
+    "model": "yolov8n-seg_384x640_ncnn_model",
+    "imgsz": [
+      384,
+      640
+    ],
+    "conf": 0.25,
+    "retina_masks": true,
+    "dilate": 11
+  },
+  "python": "3.10.14",
+  "platform": "Linux-6.12.75+rpt-rpi-2712-aarch64-with-glibc2.41",
+  "packages": {
+    "ultralytics": "8.4.61",
+    "torch": "2.12.0",
+    "onnxruntime": "1.23.2",
+    "ncnn": "1.0.20260526",
+    "opencv-python": "4.8.1.78",
+    "numpy": "1.26.4"
+  }
+}
