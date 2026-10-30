@@ -1,8 +1,7 @@
 import os
 import cv2
 import time
-import random
-import string
+import hmac
 import secrets
 import jwt
 import datetime
@@ -31,8 +30,21 @@ app.config['SECRET_KEY'] = secrets.token_hex(32)
 PUBLIC_KEY_FILE = "allowed_public_keys.pem"
 CONFIG_FILE = "gateway_config.json"
 
-REGISTRATION_CODE = "".join(random.choices(string.digits, k=6))
-BYPASS_PIN = "".join(random.choices(string.digits, k=4))
+def random_digits(n):
+    return f"{secrets.randbelow(10 ** n):0{n}d}"
+
+# 초기 설정용 등록 코드: 콘솔에만 찍힌다. 5번 틀리면 재시작할 때까지 설정 API를 닫는다.
+REGISTRATION_CODE = random_digits(6)
+REGISTRATION_MAX_FAILS = 5
+registration_fails = 0
+
+# 신뢰 이전 PIN: 침입 알림 때 만들되 PIN_TTL마다 한 번만 만든다. 맞히거나 만료되거나 시도 횟수를 다 쓰면 폐기한다.
+PIN_TTL = 300          # 초
+PIN_MAX_TRIES = 5
+TRUSTED_HOURS = 0.5    # PIN으로 얻는 trusted 세션(원본 영상만) 유효 시간
+bypass_pin = None      # {"pin": str, "expires": float, "tries_left": int}
+pin_issued_at = 0.0    # 마지막 PIN 발급 시각
+auth_lock = threading.Lock()  # 등록 코드·PIN 상태 보호
 
 # 서버가 발급한 서명용 챌린지: nonce -> 만료 시각. 한 번 검증에 쓰면(성공이든 실패든) 지운다.
 CHALLENGE_TTL = 60   # 초
@@ -95,7 +107,6 @@ state = SystemSecurityStateMachine()
 print("\n" + "="*60)
 print(f"🔒 [보안 게이트웨이 통합 코어 가동]")
 print(f" ▶️ 1차 기기 등록 코드 :  {REGISTRATION_CODE}")
-print(f" ▶️ 2차 PIN 암호      :  {BYPASS_PIN}")
 print(f" ⚠️ 웹 관제 대시보드   :  https://라즈베리파이IP:8443")
 print("="*60 + "\n")
 
@@ -153,12 +164,29 @@ if state.rtsp_url:
 # =================================================================
 # 🛰️ [3. 롱 풀링(Long Polling) 수신 백커널 및 알림 시스템]
 # =================================================================
+def issue_bypass_pin():
+    """새 PIN을 만들어 이전 PIN을 대체한다. 직전 발급 후 PIN_TTL이 안 지났으면 만들지 않고 None.
+    (알림을 일부러 반복시켜 새 PIN과 시도 횟수를 계속 받아 가는 대입 공격을 막는다)"""
+    global bypass_pin, pin_issued_at
+    with auth_lock:
+        now = time.time()
+        if now - pin_issued_at < PIN_TTL:
+            return None
+        pin_issued_at = now
+        bypass_pin = {"pin": random_digits(6), "expires": now + PIN_TTL, "tries_left": PIN_MAX_TRIES}
+        return bypass_pin["pin"]
+
 def dispatch_telegram_intrusion_msg(reason):
     if not state.bot_token or not state.chat_id: return
+    pin = issue_bypass_pin()
+    if pin:
+        pin_line = f"복구용 우회 PIN 코드(1회용, {PIN_TTL // 60}분): [{pin}]"
+    else:
+        pin_line = f"우회 PIN은 {PIN_TTL // 60}분에 한 번만 발급합니다. 직전에 받은 PIN을 쓰십시오."
     url = f"https://api.telegram.org/bot{state.bot_token}/sendMessage"
     payload = {
         "chat_id": state.chat_id,
-        "text": f"🚨 [보안 게이트웨이 침입 이상 징후]\n사유: {reason}\n복구용 우회 PIN 코드: [{BYPASS_PIN}]\n\n👇 아래 제어판 버튼을 통해 즉각적인 원격 인터록 격발이 가능합니다.",
+        "text": f"🚨 [보안 게이트웨이 침입 이상 징후]\n사유: {reason}\n{pin_line}\n\n👇 아래 제어판 버튼을 통해 즉각적인 원격 인터록 격발이 가능합니다.",
         "reply_markup": {
             "inline_keyboard": [
                 [
@@ -199,7 +227,10 @@ def telegram_long_polling_worker():
                     action = callback["data"]
                     cb_id = callback["id"]
                     chat_id = callback["message"]["chat"]["id"]
-                    
+                    if str(chat_id) != str(state.chat_id):  # 등록된 채팅에서 누른 버튼만 받는다
+                        logger.warning(f"등록되지 않은 채팅({chat_id})의 텔레그램 버튼 응답을 무시합니다.")
+                        continue
+
                     reply_url = f"https://api.telegram.org/bot{state.bot_token}/sendMessage"
                     
                     if action == "execute_lockdown":
@@ -227,8 +258,8 @@ threading.Thread(target=telegram_long_polling_worker, daemon=True).start()
 def is_initial_state():
     return not os.path.exists(PUBLIC_KEY_FILE) or not state.admin_id
 
-def generate_jwt_claims(auth_level):
-    payload = {"auth_level": auth_level, "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=2)}
+def generate_jwt_claims(auth_level, hours=2):
+    payload = {"auth_level": auth_level, "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=hours)}
     return jwt.encode(payload, app.config['SECRET_KEY'], algorithm="HS256")
 
 def extract_jwt_level(token):
@@ -240,9 +271,30 @@ def extract_jwt_level(token):
 
 @app.route('/api/setup_gateway', methods=['POST'])
 def api_setup_gateway():
+    global registration_fails
+    # 설치가 끝난 뒤에는 닫는다. 다시 설치하려면 파이에서 PUBLIC_KEY_FILE·CONFIG_FILE을 지우고 재시작
+    if not is_initial_state():
+        return jsonify({"status": "error", "msg": "이미 초기 설정이 끝났습니다."}), 403
     data = request.json or {}
-    if data.get("code", "") != REGISTRATION_CODE:
-        return jsonify({"status": "error", "msg": "초기화 인프라 등록 코드가 일치하지 않습니다."}), 401
+    with auth_lock:
+        # 코드를 바꿔 주는 것만으로는 대입 속도가 줄지 않으므로, 다 틀리면 재시작할 때까지 닫는다
+        if registration_fails >= REGISTRATION_MAX_FAILS:
+            return jsonify({"status": "error", "msg": "등록 코드를 여러 번 틀려 설정이 잠겼습니다. 게이트웨이를 재시작하십시오."}), 403
+        if not hmac.compare_digest(str(data.get("code", "")).encode(), REGISTRATION_CODE.encode()):
+            registration_fails += 1
+            if registration_fails >= REGISTRATION_MAX_FAILS:
+                print(f" ⚠️ 등록 코드 {REGISTRATION_MAX_FAILS}회 실패: 재시작할 때까지 초기 설정이 잠깁니다.", flush=True)
+            return jsonify({"status": "error", "msg": "초기화 인프라 등록 코드가 일치하지 않습니다."}), 401
+
+    # 비어 있거나 잘못된 값이 저장되면 설정이 안 닫히거나(관리자 ID 없음) master를 영영 못 얻는다(공개키 오류)
+    if not all(isinstance(data.get(k), str) and data[k] for k in ("admin_id", "admin_pw", "public_key")):
+        return jsonify({"status": "error", "msg": "관리자 아이디·비밀번호·공개키가 필요합니다."}), 400
+    try:
+        pub_key = serialization.load_pem_public_key(data["public_key"].encode())
+    except ValueError:
+        pub_key = None
+    if not (isinstance(pub_key, ec.EllipticCurvePublicKey) and isinstance(pub_key.curve, ec.SECP256R1)):
+        return jsonify({"status": "error", "msg": "공개키가 P-256 PEM 형식이 아닙니다."}), 400
     try:
         with open(PUBLIC_KEY_FILE, "w") as f: f.write(data.get("public_key", ""))
         config_data = {
@@ -294,7 +346,7 @@ def api_verify_signature():
     if not is_recovery and extract_jwt_level(request.cookies.get("auth_token")) == "none":
         return jsonify({"status": "error", "msg": "먼저 로그인하십시오."}), 401
 
-    challenge = data.get("challenge", "")
+    challenge = str(data.get("challenge", ""))  # 문자열이 아니면(리스트 등) pop에서 500이 나지 않게
     with challenge_lock:
         expires = pending_challenges.pop(challenge, None)  # 일회성: 검증 결과와 관계없이 소비
 
@@ -304,7 +356,7 @@ def api_verify_signature():
             raise InvalidSignature
 
         # 브라우저(WebCrypto)는 서명을 r||s 64바이트로 준다 -> 여기서 DER로 바꾼다
-        raw = bytes.fromhex(data.get("signature", ""))
+        raw = bytes.fromhex(str(data.get("signature", "")))
         if len(raw) != 64:
             raise InvalidSignature
         der = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
@@ -329,11 +381,27 @@ def api_verify_signature():
 
 @app.route('/api/verify_pin', methods=['POST'])
 def api_verify_pin():
+    global bypass_pin
     if state.mode == "LOCKDOWN": return jsonify({"status": "error", "msg": "락다운 상태입니다."}), 403
-    data = request.json or {}
-    if data.get("pin") == BYPASS_PIN:
+    if extract_jwt_level(request.cookies.get("auth_token")) == "none":
+        return jsonify({"status": "error", "msg": "먼저 로그인하십시오."}), 401
+    pin = str((request.json or {}).get("pin", ""))
+    with auth_lock:
+        current = bypass_pin
+        if current is None or current["expires"] < time.time():
+            bypass_pin = None
+            return jsonify({"status": "error", "msg": f"유효한 PIN이 없습니다. 새 PIN은 {PIN_TTL // 60}분에 한 번 발송됩니다."}), 401
+        ok = hmac.compare_digest(pin.encode(), current["pin"].encode())
+        if ok:
+            bypass_pin = None  # 1회용
+        else:
+            current["tries_left"] -= 1
+            if current["tries_left"] <= 0:
+                bypass_pin = None  # 잠그지 않고 폐기만 한다(일부러 틀려서 락다운시키는 경로를 막기 위해)
+    if ok:
         resp = make_response(jsonify({"status": "success"}))
-        resp.set_cookie("auth_token", generate_jwt_claims("master"), httponly=True)
+        # master가 아니라 trusted: 원본 영상만 열리고 설정 변경은 서명(master)이 있어야 한다
+        resp.set_cookie("auth_token", generate_jwt_claims("trusted", TRUSTED_HOURS), httponly=True)
         return resp
     return jsonify({"status": "error", "msg": "PIN 번호 불일치"}), 401
 
@@ -410,8 +478,8 @@ def generate_secure_stream(level):
                     # fail-closed: 마스킹을 못 했으면 원본 대신 검은 화면
                     processed_frame = np.zeros((h, w, 3), dtype=np.uint8)
                     cv2.putText(processed_frame, "MASKING UNAVAILABLE", (40, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            elif level == "master":
-                cv2.putText(processed_frame, "SECURE FEED: MASTER (RAW)", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            elif level in ("master", "trusted"):  # trusted = PIN 통과 세션
+                cv2.putText(processed_frame, f"SECURE FEED: {level.upper()} (RAW)", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         ret, buffer = cv2.imencode('.jpg', processed_frame)
         if not ret: continue
@@ -537,7 +605,7 @@ def render_setup_wizard():
         fetch('/api/setup_gateway',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
             code:document.getElementById('s_code').value,rtsp_url:document.getElementById('s_rtsp').value,bot_token:document.getElementById('s_tok').value,
             chat_id:document.getElementById('s_chat').value,admin_id:document.getElementById('s_uid').value,admin_pw:document.getElementById('s_pw').value,public_key:pubPem
-        })}).then(r=>r.json()).then(d=>{if(d.status==='success')location.reload();else alert("설정 실패");});
+        })}).then(r=>r.json()).then(d=>{if(d.status==='success')location.reload();else alert("설정 실패: "+d.msg);});
     }
     </script></body></html>
     """
@@ -565,7 +633,8 @@ def render_login_gate():
     """
 
 def render_main_dashboard(level):
-    level_status = "true" if level == "master" else "false"
+    # trusted도 서명 시도를 건너뛴다(새로 고칠 때마다 서명 실패 -> 알림 -> 새 PIN이 반복되지 않게)
+    level_status = "true" if level in ("master", "trusted") else "false"
     return f"""
     <!DOCTYPE html>
     <html><head><meta charset="UTF-8"><title>Edge Dashboard</title>
@@ -583,8 +652,8 @@ def render_main_dashboard(level):
     
     <div id="pin_gate_panel" style="display:none; flex-direction:column; gap:10px; background:#2d3748; padding:15px; border-radius:8px; border:2px dashed #f87171;">
         <p style="color:#f87171; margin:0; font-size:0.85rem; font-weight:bold;">⚠️ 비인가 장치 차단 모드 작동 중</p>
-        <p style="color:#94a3b8; margin:0; font-size:0.8rem;">텔레그램으로 발송된 우회용 일회성 PIN 코드를 입력하면 원본 영상 권한이 허용됩니다.</p>
-        <div style="display:flex; gap:5px;"><input type="text" id="l_pin" style="flex:1;padding:8px; background:#0f172a; border:1px solid #475569; color:white; border-radius:4px;" placeholder="PIN 4자리"><button style="padding:8px;background:#ef4444;color:white;border:none;border-radius:6px;font-weight:bold;" onclick="submitBypassPin()">확인</button></div>
+        <p style="color:#94a3b8; margin:0; font-size:0.8rem;">텔레그램으로 발송된 일회성 PIN(5분 유효)을 입력하면 30분 동안 원본 영상 권한이 허용됩니다.</p>
+        <div style="display:flex; gap:5px;"><input type="text" id="l_pin" style="flex:1;padding:8px; background:#0f172a; border:1px solid #475569; color:white; border-radius:4px;" placeholder="PIN 6자리"><button style="padding:8px;background:#ef4444;color:white;border:none;border-radius:6px;font-weight:bold;" onclick="submitBypassPin()">확인</button></div>
     </div>
     
     <button class="btn btn-orange" onclick="tryAccessSettings()">⚙️ 인프라 환경설정 변경</button>
@@ -662,7 +731,7 @@ def render_main_dashboard(level):
             if(d.status==='success') {{
                 alert("🔓 신뢰 권한 위임: PIN 번호가 확인되었습니다. 원본 영상 관제로 즉시 전환합니다.");
                 location.reload();
-            }} else {{ alert("❌ 인증 실패: PIN 번호가 맞지 않습니다."); }}
+            }} else {{ alert("❌ 인증 실패: " + d.msg); }}
         }});
     }}
 
