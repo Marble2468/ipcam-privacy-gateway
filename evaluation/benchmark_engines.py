@@ -42,7 +42,7 @@ CONF, BLUR = 0.3, (19, 19)
 RES = {360: {"size": (640, 360), "imgsz": (192, 320), "dilate": 11},
        1080: {"size": (1920, 1080), "imgsz": (640, 1088), "dilate": 31}}
 BACKEND_FORMAT = {"pytorch": "pt", "onnx": "onnx", "ncnn": "ncnn"}  # AutoBackend.format
-BUSY = ("evaluate_masking", "app_final", "benchmark_engines")
+BUSY = ("evaluate_masking", "app.py", "benchmark_engines")
 
 
 def model_file(model, engine, imgsz):

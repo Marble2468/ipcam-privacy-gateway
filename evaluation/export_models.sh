@@ -5,7 +5,7 @@
 # by ultralytics if they are not already there.
 set -e
 
-# Gateway detector (app_final.py) and the light model in evaluate_masking.py.
+# Gateway detector (gateway/app.py) and the light model in evaluate_masking.py.
 # Square 320x320 input: the gateway's 640x360 frame is letterboxed into it.
 yolo export model=yolov8n.pt format=onnx imgsz=320
 mv yolov8n.onnx yolov8n_320.onnx

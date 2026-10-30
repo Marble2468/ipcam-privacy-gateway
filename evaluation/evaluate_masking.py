@@ -29,8 +29,8 @@ import numpy as np
 from ultralytics import YOLO
 
 STRIDE = 3
-FRAME_W, FRAME_H = 640, 360  # gateway resizes every frame to this (app_final.py)
-LIGHT_MODEL, LIGHT_IMGSZ, LIGHT_CONF = "yolov8n_192x320_ncnn_model", (192, 320), 0.3  # as in app_final.py
+FRAME_W, FRAME_H = 640, 360  # gateway resizes every frame to this (gateway/app.py)
+LIGHT_MODEL, LIGHT_IMGSZ, LIGHT_CONF = "yolov8n_192x320_ncnn_model", (192, 320), 0.3  # as in gateway/app.py
 SEG_MODEL, SEG_IMGSZ, SEG_CONF = "yolov8n-seg_384x640_ncnn_model", (384, 640), 0.25
 SEG_DILATE = 11  # baseline dilates 31x31 at 1920x1080, i.e. about 11x11 at 640x360
 NOSE = 0  # K0 in the AI Hub keypoint list
