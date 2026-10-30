@@ -29,6 +29,8 @@ app.config['SECRET_KEY'] = secrets.token_hex(32)
 
 PUBLIC_KEY_FILE = "allowed_public_keys.pem"
 CONFIG_FILE = "gateway_config.json"
+LOCKDOWN_FILE = "lockdown.flag"  # 있으면 락다운. 재부팅해도 풀리지 않게 파일로 남긴다
+RELEASE_WINDOW = 300             # 초. 텔레그램에서 해제를 승인한 뒤 서명을 받는 시간
 
 def random_digits(n):
     return f"{secrets.randbelow(10 ** n):0{n}d}"
@@ -58,7 +60,8 @@ MASK_IMGSZ = (192, 320)  # 640x360 프레임을 최소 여백으로 넣는 입�
 
 class SystemSecurityStateMachine:
     def __init__(self):
-        self.mode = "NORMAL"  # NORMAL, LOCKDOWN
+        self.mode = "LOCKDOWN" if os.path.exists(LOCKDOWN_FILE) else "NORMAL"
+        self.release_until = 0.0  # 텔레그램 해제 승인이 유효한 시각
         self.bot_token = ""
         self.chat_id = ""
         self.rtsp_url = ""
@@ -100,9 +103,18 @@ class SystemSecurityStateMachine:
     def trigger_lockdown(self, active=True):
         with self.lock:
             self.mode = "LOCKDOWN" if active else "NORMAL"
+            self.release_until = 0.0
+            if active:
+                # 서명 키를 바꿔 지금까지 발급한 JWT(master 포함)를 전부 무효로 한다
+                app.config['SECRET_KEY'] = secrets.token_hex(32)
+                open(LOCKDOWN_FILE, "w").close()
+            elif os.path.exists(LOCKDOWN_FILE):
+                os.remove(LOCKDOWN_FILE)
             logger.warning(f"🚨 [LOCKDOWN] 시스템 제어 상태 변경: {self.mode}")
 
 state = SystemSecurityStateMachine()
+if state.mode == "LOCKDOWN":
+    logger.warning(f"🚨 [LOCKDOWN] {LOCKDOWN_FILE}이 있어 락다운 상태로 시작합니다.")
 
 print("\n" + "="*60)
 print(f"🔒 [보안 게이트웨이 통합 코어 가동]")
@@ -191,7 +203,7 @@ def dispatch_telegram_intrusion_msg(reason):
             "inline_keyboard": [
                 [
                     {"text": "🚫 즉시 전면 락다운", "callback_data": "execute_lockdown"},
-                    {"text": "🔓 원격 락다운 해제 요청", "callback_data": "request_release_lockdown"}
+                    {"text": f"🔓 락다운 해제 승인({RELEASE_WINDOW // 60}분)", "callback_data": "request_release_lockdown"}
                 ]
             ]
         }
@@ -237,13 +249,13 @@ def telegram_long_polling_worker():
                         state.trigger_lockdown(True)
                         requests.post(reply_url, json={"chat_id": chat_id, "text": "🚫 [KILL-SWITCH] 락다운이 수동 격발되었습니다. 시스템 권한을 전면 무력화하고 블랙 화면을 강제 송출합니다."})
                     
-                    # 👈 [새로운 기능] 텔레그램 메인 창에서 해제 버튼을 눌렀을 때 라즈베리파이가 신호를 캐치하는 루틴
+                    # 해제 승인: 키를 가진 기기가 도난당해도 혼자서는 못 풀도록, 승인 후 RELEASE_WINDOW 안에만 서명 해제를 받는다
                     elif action == "request_release_lockdown":
                         if state.mode == "NORMAL":
                             requests.post(reply_url, json={"chat_id": chat_id, "text": "ℹ️ 안내: 시스템이 이미 정상 가동(NORMAL) 상태입니다. 해제할 락다운이 존재하지 않습니다."})
                         else:
-                            # 웹 페이지 대시보드를 마스터 키 서명 대기 검증창으로 즉각 강제 라우팅 유도하기 위해 알림 사출
-                            requests.post(reply_url, json={"chat_id": chat_id, "text": f"🔓 [해제 절차 개시] 보안 검증을 시작합니다. 웹 관제 대시보드 화면(https://라즈베리파이IP:8443)에 접속하여 '마스터 비대칭키 서명 제출' 버튼을 완료해 주십시오."})
+                            state.release_until = time.time() + RELEASE_WINDOW
+                            requests.post(reply_url, json={"chat_id": chat_id, "text": f"🔓 [해제 승인] {RELEASE_WINDOW // 60}분 안에 웹 관제 대시보드(https://라즈베리파이IP:8443)에서 '마스터 비대칭키 서명 제출'을 완료해 주십시오."})
                     
                     requests.post(f"https://api.telegram.org/bot{state.bot_token}/answerCallbackQuery", json={"callback_query_id": cb_id})
         except Exception as e:
@@ -320,8 +332,11 @@ def api_login_idpw():
 
 @app.route('/api/get_challenge')
 def api_get_challenge():
-    # 평소에는 1단계(ID/PW)를 통과한 세션에만 발급. 락다운 중에는 로그인이 막혀 있으므로 해제용으로 누구에게나 발급
-    if state.mode != "LOCKDOWN" and extract_jwt_level(request.cookies.get("auth_token")) == "none":
+    # 평소에는 1단계(ID/PW)를 통과한 세션에만 발급. 락다운 중에는 로그인이 막혀 있으므로, 텔레그램 해제 승인 뒤에만 누구에게나 발급
+    if state.mode == "LOCKDOWN":
+        if time.time() > state.release_until:
+            return jsonify({"status": "error", "msg": "텔레그램에서 락다운 해제를 먼저 승인하십시오."}), 403
+    elif extract_jwt_level(request.cookies.get("auth_token")) == "none":
         return jsonify({"status": "error", "msg": "먼저 로그인하십시오."}), 401
     now = time.time()
     with challenge_lock:
@@ -343,6 +358,8 @@ def api_verify_signature():
         return jsonify({"status": "error", "msg": "락다운 상태입니다."}), 403
     if state.mode != "LOCKDOWN" and is_recovery:
         return jsonify({"status": "error", "msg": "락다운 상태가 아닙니다."}), 400
+    if is_recovery and time.time() > state.release_until:
+        return jsonify({"status": "error", "msg": "텔레그램에서 락다운 해제를 먼저 승인하십시오."}), 403
     if not is_recovery and extract_jwt_level(request.cookies.get("auth_token")) == "none":
         return jsonify({"status": "error", "msg": "먼저 로그인하십시오."}), 401
 
@@ -437,17 +454,19 @@ def api_logout():
 # =================================================================
 # 🎥 [영상 관제 스트리밍 분기 처리]
 # =================================================================
-def generate_secure_stream(level):
+def generate_secure_stream(token):
     while True:
         if pipeline.frame is None or is_initial_state():
             time.sleep(0.03)
             continue
-            
+
+        # 등급은 프레임마다 다시 확인한다: 토큰이 만료되거나 락다운으로 무효가 되면 열린 스트림도 바로 바뀐다
+        level = extract_jwt_level(token)
         with pipeline.lock:
             processed_frame = cv2.resize(pipeline.frame.copy(), (640, 360))
         h, w = processed_frame.shape[:2]
-        
-        if state.mode == "LOCKDOWN" and level != "master":
+
+        if state.mode == "LOCKDOWN":
             processed_frame = np.zeros((h, w, 3), dtype=np.uint8)
             cv2.putText(processed_frame, "⚠️ SYSTEM LOCKDOWN ACTIVE", (40, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
@@ -487,8 +506,7 @@ def generate_secure_stream(level):
 
 @app.route('/video_feed')
 def video_feed():
-    level = extract_jwt_level(request.cookies.get("auth_token"))
-    return Response(generate_secure_stream(level), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_secure_stream(request.cookies.get("auth_token")), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 # =================================================================
 # 🌐 [웹 템플릿 및 인터페이스 제어 뷰 계층]
@@ -498,7 +516,7 @@ def index():
     if is_initial_state(): return render_setup_wizard()
     level = extract_jwt_level(request.cookies.get("auth_token"))
     
-    if state.mode == "LOCKDOWN" and level != "master":
+    if state.mode == "LOCKDOWN":
         return render_lockdown_gate()
     if level == "none": return render_login_gate()
     return render_main_dashboard(level)
@@ -746,7 +764,7 @@ def render_lockdown_gate():
     <style>body{font-family:sans-serif;background:#450a0a;color:#f8fafc;display:flex;justify-content:center;padding-top:100px;}</style></head>
     <body><div style="background:#7f1d1d; padding:40px; border-radius:12px; text-align:center; border:2px solid #f87171; width:500px;">
     <h1 style="font-size:3rem; margin:0;">🚫</h1><h2 style="margin:10px 0 20px 0;">SYSTEM LOCKED DOWN</h2>
-    <p style="color:#fca5a5;">원격 제어 기능에 의해 게이트웨이가 전면 잠금 상태로 전환되었습니다.<br>이 잠금은 오직 마스터 단말기의 전자서명 제출로만 해제할 수 있습니다.</p>
+    <p style="color:#fca5a5;">원격 제어 기능에 의해 게이트웨이가 전면 잠금 상태로 전환되었습니다.<br>텔레그램에서 '락다운 해제 승인'을 누른 뒤 5분 안에 마스터 단말기의 전자서명을 제출해야 해제됩니다.</p>
     <hr style="border:1px solid #b91c1c; margin:20px 0;">
     <button style="width:100%; padding:15px; background:#f87171; color:#450a0a; font-weight:bold; font-size:1rem; border:none; border-radius:6px; cursor:pointer;" onclick="releaseLockdown()">🔓 마스터 비대칭키 서명 제출 및 락다운 해제</button>
     </div>
@@ -771,7 +789,7 @@ def render_lockdown_gate():
         });
         const d = await res.json();
         if(d.status === "success") { alert("🔓 시스템 복구 완료: 락다운을 해제합니다."); location.reload(); } 
-        else { alert("❌ 해제 실패: 서명이 일치하지 않습니다."); }
+        else { alert("❌ 해제 실패: " + d.msg); }
     }
     </script></body></html>
     """

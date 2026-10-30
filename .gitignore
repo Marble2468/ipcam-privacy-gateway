@@ -15,3 +15,6 @@ gateway_config.json
 *_ncnn_model/
 
 __pycache__/
+
+# gateway runtime state
+lockdown.flag
