@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite it as below."
+type: software
+title: "IP Camera Privacy Gateway"
+abstract: >-
+  Code and measurement results for the paper "Edge Computing-Based Privacy Preservation
+  for IP Cameras Using Two-Track Stream Branching and Cryptographic Credentials": a Raspberry Pi 5
+  gateway that gives a registered browser the raw camera stream and every other viewer a stream
+  with people blurred, plus the scripts behind the speed and masking evaluations.
+authors:
+  - given-names: Seokyong
+    family-names: Moon
+    affiliation: Sun Moon University
+  - given-names: Jooyoung
+    family-names: Lee
+    affiliation: Sun Moon University
+  - given-names: Hyoseong
+    family-names: Kim
+    affiliation: Sun Moon University
+  - given-names: Taeyoon
+    family-names: Lee
+    affiliation: Sun Moon University
+  - given-names: Taek
+    family-names: Lee
+    affiliation: Sun Moon University
+license: AGPL-3.0
+repository-code: "https://github.com/Marble2468/ipcam-privacy-gateway"
+version: "1.0"
+date-released: "2026-11-01"
+keywords:
+  - IP camera
+  - edge computing
+  - video de-identification
+  - privacy preservation
