@@ -138,7 +138,9 @@ def threads(yolo, engine):
 
 def measure(args):
     check_idle()
-    res = RES[args.res]
+    res = dict(RES[args.res])
+    if args.imgsz:
+        res["imgsz"] = tuple(args.imgsz)
     temp_start, throttle_start = temperature(), throttled_now()
     step, yolo = make_step(args, res)
 
@@ -224,6 +226,8 @@ parser.add_argument("--model", choices=["none", "bbox", "seg"])
 parser.add_argument("--engine", choices=["none", "pytorch", "onnx", "ncnn"])
 parser.add_argument("--run", type=int)
 parser.add_argument("--out")
+parser.add_argument("--imgsz", type=int, nargs=2, metavar=("H", "W"),
+                    help="override the input shape of --res (Discussion: 384 640 at 360p)")
 parser.add_argument("--summary", metavar="CSV")
 args = parser.parse_args()
 if args.summary:

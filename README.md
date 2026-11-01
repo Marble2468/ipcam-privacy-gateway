@@ -71,6 +71,7 @@ bash evaluation/benchmark_all.sh table4.csv            # 14 configurations x 3 r
 python evaluation/benchmark_engines.py --summary table4.csv
 ```
 Each run is a fresh process; the script waits for the CPU to cool to 55 °C, records throttling, and stops if ultralytics loads a different engine or input shape than requested. Our runs are in `evaluation/results/table4_results.csv`.
+The larger detector input discussed in the paper (384×640 at 360p) is measured with `--res 360 --model bbox --engine ncnn --imgsz 384 640`; our runs are in `evaluation/results/table4_384x640.csv`.
 
 ### Table 5
 The videos cannot be redistributed (see Data below). With an AI Hub account and API key:
@@ -106,7 +107,7 @@ Run the gateway with a camera and use two browsers: the registered one (raw stre
 
 ## Data
 
-The evaluation uses "Abnormal behavior video data in residential and shared spaces" (National Information Society Agency, AI Hub dataset 515). This research used datasets from 'The Open AI Dataset Project (AI-Hub, S. Korea)'. All data information can be accessed through 'AI-Hub (www.aihub.or.kr)'. The data may not be redistributed; applications are open to Korean residents, and use outside Korea needs a separate agreement with the NIA. Only clip names and derived numbers are in this repository.
+The evaluation uses "Abnormal behavior video data in residential and shared spaces" (National Information Society Agency, AI Hub dataset 515). This research used the dataset "Abnormal behavior video data in residential and shared spaces", which was built with funding from the Ministry of Science and ICT of Korea and support from the National Information Society Agency (NIA) and is available from AI-Hub (www.aihub.or.kr). The data may not be redistributed; applications are open to Korean residents, and use outside Korea needs a separate agreement with the NIA. Only clip names and derived numbers are in this repository.
 
 ## License
 
@@ -120,5 +121,5 @@ AGPL-3.0 (see `LICENSE`), as required by Ultralytics YOLO.
 - Taeyoon Lee — yoon5998@sunmoon.ac.kr
 - Taek Lee (corresponding) — comtaek76@sunmoon.ac.kr
 
-Division of Computer Science and Engineering, Sun Moon University, Republic of Korea.
+Division of Computer Science and Engineering, Sun Moon University, 70 Sunmoon-ro 221beon-gil, Tangjeong-myeon, Asan 31460, Republic of Korea.
 Supported by the MSIT, Korea, under the National Program for Excellence in SW, supervised by the IITP (2024-0-00023).

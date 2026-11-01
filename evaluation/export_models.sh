@@ -23,6 +23,11 @@ for m in yolov8n yolov8n-seg; do
     done
 done
 
+# Discussion: the gateway detector with the larger 384x640 input (benchmark_engines.py --imgsz 384 640).
+yolo export model=yolov8n.pt format=ncnn imgsz=384,640
+rm -rf yolov8n_384x640_ncnn_model
+mv yolov8n_ncnn_model yolov8n_384x640_ncnn_model
+
 # Reference segmentation in evaluate_masking.py.
 # 384x640 input fits a 640x360 frame with 12 px padding top and bottom.
 yolo export model=yolov8n-seg.pt format=ncnn imgsz=384,640
