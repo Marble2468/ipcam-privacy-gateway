@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 import psutil
 
-CLIP = "AIHUB_CLIP.mp4"  # AI Hub 515 training clip, not in the Table 5 sample
+CLIP = "clip_1080p.mp4"  # one 1080p clip of AI Hub 515 (we used a training clip outside the Table 5 sample)
 WARMUP, MAX_FRAMES, MAX_SECONDS = 30, 900, 60
 CONF, BLUR = 0.3, (19, 19)
 RES = {360: {"size": (640, 360), "imgsz": (192, 320), "dilate": 11},

@@ -19,8 +19,7 @@ OUT = Path(__file__).parent / "clips.txt"
 
 
 def parse(stem):
-    # AIHUB_CLIP
-    # crime, action, symptom, place, shooting, then
+    # <crime>_<action>_<symptom>_<place>_<shooting>_<tail>, e.g. tail "02DAS":
     # scenario (2 digits) + day/night (D/N) + camera (A/B) + length type (S)
     crime, action, symptom, place, shooting, tail = stem.split("_")
     # Same scene and scenario shot by day and by night are separate takes.

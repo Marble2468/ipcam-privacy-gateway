@@ -2,6 +2,7 @@
 
 usage: python aggregate_results.py <output folder of evaluate_masking.py>
 Writes <output>/clip_summary.csv (one row per clip) and prints mean, min and max over clips.
+Clips are numbered by their line in clips.txt (clip_no), so the summary carries no AI Hub file names.
 A clip with no labeled noses (or no detected silhouette) has no value for that metric
 and is left out of its mean; the printed n says how many clips each number covers.
 """
@@ -24,7 +25,6 @@ def summarise(path):
     face_frames = [r for r in rows if r["nose_n"] > 0]
     silhouette_frames = [r for r in rows if r["ref_px"] > 0]
     return {
-        "clip": path.stem,
         "frames": len(rows),
         "frames_with_person": sum(r["persons"] > 0 for r in rows),
         # against AI Hub keypoints (independent of both models)
@@ -50,7 +50,9 @@ missing = [c for c in sampled if not (out_dir / "frames" / f"{c}.csv").exists()]
 if missing:
     print(f"warning: {len(missing)}/{len(sampled)} sampled clips have no results yet")
 
-clips = [summarise(p) for p in sorted((out_dir / "frames").glob("*.csv"))]
+clip_no = {c: i for i, c in enumerate(sampled, 1)}
+clips = sorted(({"clip_no": clip_no[p.stem], **summarise(p)} for p in (out_dir / "frames").glob("*.csv")),
+               key=lambda c: c["clip_no"])
 with open(out_dir / "clip_summary.csv", "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=list(clips[0]))
     writer.writeheader()
