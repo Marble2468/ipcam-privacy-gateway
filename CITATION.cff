@@ -26,7 +26,7 @@ authors:
 license: AGPL-3.0
 repository-code: "https://github.com/Marble2468/ipcam-privacy-gateway"
 version: "1.0"
-date-released: "2026-11-01"
+date-released: "2026-11-04"
 keywords:
   - IP camera
   - edge computing
