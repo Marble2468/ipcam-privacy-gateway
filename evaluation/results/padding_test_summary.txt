@@ -1,0 +1,19 @@
+frames that differ from the evaluation CSVs: 0
+
+192x320: 11142 persons not fully covered
+  no joint inside any box     2751 ( 24.7%)
+  needs  1-   5 px padding      4814 ( 43.2%)
+  needs  6-  10 px padding      1264 ( 11.3%)
+  needs 11-  20 px padding      1218 ( 10.9%)
+  needs 21-     px padding      1720 ( 15.4%)
+  no box to pad              2126 ( 19.1%)
+  mean per-clip full coverage: as is 92.98%, 5 px 95.84%, 10 px 96.54%, bottom 5 93.79%, bottom 10 93.91%, bottom 20 94.02%
+
+384x640: 4865 persons not fully covered
+  no joint inside any box      770 ( 15.8%)
+  needs  1-   5 px padding      2482 ( 51.0%)
+  needs  6-  10 px padding       675 ( 13.9%)
+  needs 11-  20 px padding       378 (  7.8%)
+  needs 21-     px padding       712 ( 14.6%)
+  no box to pad               618 ( 12.7%)
+  mean per-clip full coverage: as is 97.23%, 5 px 98.56%, 10 px 98.88%, bottom 5 97.96%, bottom 10 98.12%, bottom 20 98.21%

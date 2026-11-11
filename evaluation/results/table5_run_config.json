@@ -8,10 +8,10 @@
     0
   ],
   "light": {
-    "model": "yolov8n_192x320_ncnn_model",
+    "model": "yolov8n_384x640_ncnn_model",
     "imgsz": [
-      192,
-      320
+      384,
+      640
     ],
     "conf": 0.3
   },

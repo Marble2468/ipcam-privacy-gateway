@@ -39,7 +39,7 @@ The versions in `requirements.txt` are the ones used for every measurement in th
    ```bash
    bash evaluation/export_models.sh
    ```
-   The gateway uses `yolov8n_192x320_ncnn_model`.
+   The gateway uses `yolov8n_384x640_ncnn_model`. Where several guest viewers will watch at once, set `MASK_MODEL` and `MASK_IMGSZ` in `gateway/app.py` to the 192×320 model (Section 5.3).
 2. Start it:
    ```bash
    python gateway/app.py
@@ -71,7 +71,14 @@ bash evaluation/benchmark_all.sh table4.csv            # 14 configurations x 3 r
 python evaluation/benchmark_engines.py --summary table4.csv
 ```
 Each run is a fresh process; the script waits for the CPU to cool to 55 °C, records throttling, and stops if ultralytics loads a different engine or input shape than requested. Our runs are in `evaluation/results/table4_results.csv`.
-The larger detector input discussed in the paper (384×640 at 360p) is measured with `--res 360 --model bbox --engine ncnn --imgsz 384 640`; our runs are in `evaluation/results/table4_384x640.csv`.
+The gateway's own input (384×640 at 360p) is measured with `--res 360 --model bbox --engine ncnn --imgsz 384 640`; our runs are in `evaluation/results/table4_384x640.csv`.
+
+### Concurrent viewers (Section 5.3)
+From a PC on the same network as a running gateway, with every dashboard closed:
+```bash
+python evaluation/benchmark_viewers.py --url https://<gateway address>:8443 --ssh <user>@<gateway address> --out viewers.csv
+```
+It asks for the gateway ID and password, holds 1 to 4 guest streams open at once for 60 s each and counts the new camera frames per viewer; with `--ssh` it also records the Pi's CPU use, temperature and throttling. Our runs are in `evaluation/results/viewers_results.csv` (384×640) and `viewers_results_192x320.csv`.
 
 ### Table 5
 The videos cannot be redistributed (see Data below). With an AI Hub account and API key:
@@ -80,10 +87,18 @@ The videos cannot be redistributed (see Data below). With an AI Hub account and 
 python evaluation/sample_clips.py <folder with VL zips>   # writes evaluation/clips.txt (we ran Python 3.12.10)
 bash evaluation/download_clips.sh <work folder>         # the 100 clips in clips.txt
 python evaluation/extract_clips.py <work folder>/clips <VL zips>
-python evaluation/evaluate_masking.py <work folder>/clips <results folder>   # on the Pi, about 4 h
+python evaluation/evaluate_masking.py <work folder>/clips <results folder>   # on the Pi, about 5 h
+python evaluation/evaluate_masking.py <work folder>/clips <results folder 2> 192x320   # the 192x320 comparison rows
 python evaluation/aggregate_results.py <results folder>
 ```
-`evaluation/results/table5_per_clip.csv` holds our per-clip results (clips numbered by their line in `clips.txt`) and `table5_run_config.json` the exact settings and package versions.
+`evaluation/results/table5_per_clip.csv` holds our per-clip results (clips numbered by their line in `clips.txt`) and `table5_run_config.json` the exact settings and package versions; the 192×320 comparison is in `table5_per_clip_192x320.csv` and `table5_run_config_192x320.json`.
+
+### Missed people and box padding (Section 6)
+After both `evaluate_masking.py` runs, on the Pi, from the folder with the models:
+```bash
+python evaluation/padding_test.py <work folder>/clips <padding folder> 192x320=<results folder 2> 384x640=<results folder>   # about 30 min
+```
+It decodes again only the frames in which a labeled person was not fully covered, runs the gateway detector on them and, for each such person, counts the joints inside a box and the box padding that would have covered all of them. It stops if the result without padding differs from the per-frame results of `evaluate_masking.py`. The padding is an analysis only; the gateway does not pad its boxes. Our results are in `evaluation/results/padding_uncovered_persons.csv` (one row per person, clips numbered as in `clips.txt`) and `padding_test_summary.txt`.
 
 ### Table 6
 Run the gateway with a camera and use two browsers: the registered one (raw stream) and a second one without the key, e.g. a private window logged in with the same ID and password (masked stream). For the replay case, copy the JSON body of a successful `POST /api/verify_signature` from the registered browser's developer tools and send it again from the second browser; the gateway answers 401 because each challenge can be used only once.
@@ -97,14 +112,16 @@ Run the gateway with a camera and use two browsers: the registered one (raw stre
 | Fallback PIN, trusted level | `gateway/app.py`: `issue_bypass_pin`, `api_verify_pin` |
 | Telegram kill switch and lockdown release | `gateway/app.py`: `telegram_long_polling_worker`, `SystemSecurityStateMachine` |
 | Table 4 | `evaluation/benchmark_engines.py`, `benchmark_all.sh`, `results/table4_results.csv` |
+| Section 5.3, concurrent viewers | `evaluation/benchmark_viewers.py`, `results/viewers_results.csv` |
 | Table 5 | `evaluation/evaluate_masking.py`, `aggregate_results.py`, `results/table5_*` |
+| Section 6, missed people and box padding | `evaluation/padding_test.py`, `results/padding_*` |
 
 ## Known limitations
 
 - Flask's development server with a self-signed certificate; put a proper TLS front end in front of it for real use.
-- One registered master key. If that device is lost, the owner must reinstall the gateway on the Pi.
-- The Telegram bot token, chat ID and camera RTSP URL are stored in plain text in `gateway_config.json` (the administrator password is stored as a scrypt hash). Use a private chat with the bot: button presses are checked by chat ID only.
-- Each viewer runs its own inference on the Pi.
+- One registered master key. If that device is lost, delete `allowed_public_keys.pem` on the Pi and restart the gateway; the setup page opens again with a new registration code.
+- The Telegram bot token, chat ID and camera RTSP URL are stored in plain text in `gateway_config.json` (the administrator password is stored as a scrypt hash). The gateway accepts only a private chat with the bot (a positive chat ID), so alerts, the PIN and the buttons are limited to the owner's account.
+- The gateway runs inference separately for each guest stream, one frame at a time. With the 384×640 input one guest viewer received all 15 FPS of the camera and two received about 9 each (Section 5.3); the 192×320 input serves three at the full rate but covers fewer persons.
 
 ## Data
 

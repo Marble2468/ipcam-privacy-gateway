@@ -56,9 +56,19 @@ MAX_PENDING = 100    # 락다운 중에는 로그인 없이 발급하므로 개�
 pending_challenges = {}
 challenge_lock = threading.Lock()
 
-# 마스킹 모델: Table 4에서 가장 빠른 구성 (evaluation/export_models.sh로 생성)
-MASK_MODEL = "yolov8n_192x320_ncnn_model"
-MASK_IMGSZ = (192, 320)  # 640x360 프레임을 최소 여백으로 넣는 입력 크기
+# 마스킹 모델: Table 4에서 가장 빠른 엔진 NCNN (evaluation/export_models.sh로 생성)
+# 입력 384x640 = 640x360 프레임을 줄이지 않고 넣는 크기. 시청자 한 명이면 15 FPS 카메라를 따라간다.
+# 동시에 여러 guest가 볼 곳은 192x320(yolov8n_192x320_ncnn_model)으로 바꾸면 세 명까지 15 FPS (논문 5.3절)
+MASK_MODEL = "yolov8n_384x640_ncnn_model"
+MASK_IMGSZ = (384, 640)
+RESEND_INTERVAL = 0.5    # 초. 새 카메라 프레임이 없어도 이 간격으로 한 장은 보낸다(멈춘 카메라에서도 락다운·만료 반영)
+
+
+def is_private_chat_id(value):
+    """텔레그램 개인 채팅 ID는 양수(상대 사용자 ID), 그룹·채널 ID는 음수다. 그룹이면 다른 참가자도 PIN을 보고 버튼을 누를 수 있다.
+    빈 값은 텔레그램을 쓰지 않는다는 뜻이라 허용한다."""
+    s = str(value)
+    return s == "" or (s.isascii() and s.isdigit())
 
 class SystemSecurityStateMachine:
     def __init__(self):
@@ -79,6 +89,9 @@ class SystemSecurityStateMachine:
                     cfg = json.load(f)
                     self.bot_token = cfg.get("bot_token", "")
                     self.chat_id = cfg.get("chat_id", "")
+                    if not is_private_chat_id(self.chat_id):  # 손으로 고친 설정 파일도 그룹 채팅은 쓰지 않는다
+                        logger.warning("텔레그램 chat ID가 개인 채팅 ID(양수)가 아니라서 텔레그램 알림·버튼을 끕니다.")
+                        self.chat_id = ""
                     self.rtsp_url = cfg.get("rtsp_url", "")
                     self.admin_id = cfg.get("admin_id", "")
                     self.admin_pw = cfg.get("admin_pw", "")
@@ -128,6 +141,7 @@ class StreamInferencePipeline:
     def __init__(self):
         self.model = None
         self.frame = None
+        self.frame_id = 0  # 캡처할 때마다 1씩 올린다. 스트림은 번호가 바뀐 프레임만 처리한다
         self.running = False
         self.lock = threading.Lock()
         self.infer_lock = threading.Lock()  # ultralytics 예측기는 스레드 안전하지 않음
@@ -163,6 +177,7 @@ class StreamInferencePipeline:
                         continue
                     with self.lock:
                         self.frame = np.copy(frame)
+                        self.frame_id += 1
                 else:
                     time.sleep(1.0)
             except Exception as e:
@@ -309,6 +324,8 @@ def api_setup_gateway():
         pub_key = None
     if not (isinstance(pub_key, ec.EllipticCurvePublicKey) and isinstance(pub_key.curve, ec.SECP256R1)):
         return jsonify({"status": "error", "msg": "공개키가 P-256 PEM 형식이 아닙니다."}), 400
+    if not is_private_chat_id(data.get("chat_id", "")):
+        return jsonify({"status": "error", "msg": "텔레그램 chat ID는 봇과의 개인 채팅 ID(양수)여야 합니다."}), 400
     try:
         with open(PUBLIC_KEY_FILE, "w") as f: f.write(data.get("public_key", ""))
         config_data = {
@@ -329,7 +346,7 @@ def api_login_idpw():
     pw = data.get("pw")
     if data.get("id") == state.admin_id and isinstance(pw, str) and check_password_hash(state.admin_pw, pw):
         resp = make_response(jsonify({"status": "success"}))
-        resp.set_cookie("auth_token", generate_jwt_claims("guest"), httponly=True)
+        resp.set_cookie("auth_token", generate_jwt_claims("guest"), httponly=True, secure=True, samesite="Lax")
         return resp
     return jsonify({"status": "error", "msg": "로그인 자격 증명 실패"}), 401
 
@@ -390,7 +407,7 @@ def api_verify_signature():
             logger.info("🔓 [Crypto] 마스터 암호키 검증 무결성 입증 완료: 락다운 잠금을 정식 해제합니다.")
             
         resp = make_response(jsonify({"status": "success"}))
-        resp.set_cookie("auth_token", generate_jwt_claims("master"), httponly=True)
+        resp.set_cookie("auth_token", generate_jwt_claims("master"), httponly=True, secure=True, samesite="Lax")
         return resp
     except (InvalidSignature, ValueError):  # ValueError: 서명이 hex가 아닌 경우
         if not is_recovery:
@@ -421,7 +438,7 @@ def api_verify_pin():
     if ok:
         resp = make_response(jsonify({"status": "success"}))
         # master가 아니라 trusted: 원본 영상만 열리고 설정 변경은 서명(master)이 있어야 한다
-        resp.set_cookie("auth_token", generate_jwt_claims("trusted", TRUSTED_HOURS), httponly=True)
+        resp.set_cookie("auth_token", generate_jwt_claims("trusted", TRUSTED_HOURS), httponly=True, secure=True, samesite="Lax")
         return resp
     return jsonify({"status": "error", "msg": "PIN 번호 불일치"}), 401
 
@@ -438,6 +455,8 @@ def api_update_setting():
     valid_keys = ["rtsp_url", "bot_token", "chat_id", "admin_pw"]
     if target_key not in valid_keys:
         return jsonify({"status": "error", "msg": "허용되지 않은 설정 키 자산입니다."}), 400
+    if target_key == "chat_id" and not is_private_chat_id(target_val):
+        return jsonify({"status": "error", "msg": "텔레그램 chat ID는 봇과의 개인 채팅 ID(양수)여야 합니다."}), 400
     if target_key == "admin_pw":
         if not isinstance(target_val, str) or not target_val:
             return jsonify({"status": "error", "msg": "새 비밀번호가 비어 있습니다."}), 400
@@ -462,10 +481,16 @@ def api_logout():
 # 🎥 [영상 관제 스트리밍 분기 처리]
 # =================================================================
 def generate_secure_stream(token):
+    last_id, last_sent = None, 0.0
     while True:
         if pipeline.frame is None or is_initial_state():
             time.sleep(0.03)
             continue
+        # 새 카메라 프레임만 처리한다: 같은 프레임을 다시 추론·인코딩·전송하지 않는다
+        if pipeline.frame_id == last_id and time.time() - last_sent < RESEND_INTERVAL:
+            time.sleep(0.005)
+            continue
+        last_id, last_sent = pipeline.frame_id, time.time()
 
         # 등급은 프레임마다 다시 확인한다: 토큰이 만료되거나 락다운으로 무효가 되면 열린 스트림도 바로 바뀐다
         level = extract_jwt_level(token)

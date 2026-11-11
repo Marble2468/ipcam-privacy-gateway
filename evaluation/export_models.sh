@@ -6,7 +6,7 @@
 set -e
 
 # Square 320x320 ONNX detector: the gateway's model before 2026-10-29, kept to
-# repeat the reference Table 5 run. The gateway now uses yolov8n_192x320_ncnn_model (below).
+# repeat the reference Table 5 run. The gateway now uses yolov8n_384x640_ncnn_model (below).
 yolo export model=yolov8n.pt format=onnx imgsz=320
 mv yolov8n.onnx yolov8n_320.onnx
 
@@ -23,7 +23,8 @@ for m in yolov8n yolov8n-seg; do
     done
 done
 
-# Discussion: the gateway detector with the larger 384x640 input (benchmark_engines.py --imgsz 384 640).
+# The gateway detector: 384x640 takes a 640x360 frame without downscaling (benchmark_engines.py --imgsz 384 640).
+# The 192x320 model above is the alternative for several simultaneous guest viewers.
 yolo export model=yolov8n.pt format=ncnn imgsz=384,640
 rm -rf yolov8n_384x640_ncnn_model
 mv yolov8n_ncnn_model yolov8n_384x640_ncnn_model

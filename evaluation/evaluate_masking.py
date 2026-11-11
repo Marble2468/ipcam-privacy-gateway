@@ -1,8 +1,8 @@
 """Table 5: how well the gateway's box blur hides people in the sampled AI Hub clips.
 
 Every STRIDE-th frame of each clip is resized to 640x360 as the gateway does, then:
-  light  - the gateway detector (YOLOv8n NCNN 192x320, conf 0.3, person only); its boxes are
-           exactly the area the gateway blurs
+  light  - the gateway detector (YOLOv8n NCNN 384x640 unless another input is given, conf 0.3,
+           person only); its boxes are exactly the area the gateway blurs
   seg    - YOLOv8n-seg (NCNN 384x640, conf 0.25, person only); its raw mask is the reference
            silhouette, and the same mask dilated like the segmentation baseline is the
            area that baseline blurs
@@ -12,7 +12,7 @@ One CSV per clip (one row per evaluated frame) is written to <output>/frames/.
 Finished clips are skipped, so an interrupted run can simply be restarted.
 Summarise with aggregate_results.py.
 
-usage: python evaluate_masking.py <folder with <clip>.mp4 and <clip>.json> <output folder>
+usage: python evaluate_masking.py <folder with <clip>.mp4 and <clip>.json> <output folder> [detector input, e.g. 192x320]
 Model paths are relative to the working directory.
 """
 import csv
@@ -30,7 +30,7 @@ from ultralytics import YOLO
 
 STRIDE = 3
 FRAME_W, FRAME_H = 640, 360  # gateway resizes every frame to this (gateway/app.py)
-LIGHT_MODEL, LIGHT_IMGSZ, LIGHT_CONF = "yolov8n_192x320_ncnn_model", (192, 320), 0.3  # as in gateway/app.py
+LIGHT_MODEL, LIGHT_IMGSZ, LIGHT_CONF = "yolov8n_384x640_ncnn_model", (384, 640), 0.3  # as in gateway/app.py
 SEG_MODEL, SEG_IMGSZ, SEG_CONF = "yolov8n-seg_384x640_ncnn_model", (384, 640), 0.25
 SEG_DILATE = 11  # baseline dilates 31x31 at 1920x1080, i.e. about 11x11 at 640x360
 NOSE = 0  # K0 in the AI Hub keypoint list
@@ -127,6 +127,9 @@ def version(pkg):
 
 
 clips_dir, out_dir = Path(sys.argv[1]), Path(sys.argv[2])
+if len(sys.argv) > 3:  # another gateway input, e.g. 192x320 (Table 5 comparison); NCNN model from export_models.sh
+    h, w = map(int, sys.argv[3].split("x"))
+    LIGHT_MODEL, LIGHT_IMGSZ = f"yolov8n_{h}x{w}_ncnn_model", (h, w)
 (out_dir / "frames").mkdir(parents=True, exist_ok=True)
 
 config = {
